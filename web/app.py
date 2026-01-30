@@ -290,19 +290,32 @@ def convert():
             converter.save_config(ce_config_dir)
 
             # 5. 压缩结果
-            output_zip_path = os.path.join(app.config['OUTPUT_FOLDER'], f"{session_id}_result.zip")
+            # 获取原始文件名 
+            original_filename = "converted"
+            try:
+                for f in os.listdir(session_upload_dir):
+                    if f.endswith(".zip"):
+                        original_filename = f[:-4] # 移除 .zip
+                        break
+            except:
+                pass
+
+            output_filename = f"{original_filename} [{target_format} by MCC].zip"
+            # 简单的文件名清理，防止非法字符
+            output_filename = re.sub(r'[\\/*?:"<>|]', "", output_filename)
+            
+            output_zip_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
             # 我们希望压缩包解压后直接是 resources 文件夹，或者 CraftEngine 文件夹
-            # 这里的 root_dir 应该是 session_output_dir，base_dir 应该是 "CraftEngine"
-            # 这样压缩包内就会包含 CraftEngine 文件夹
+
             shutil.make_archive(output_zip_path[:-4], 'zip', session_output_dir, "CraftEngine")
 
-            # 清理会话文件 (在真实应用中异步或延迟)
+            # 清理会话文件 
             # shutil.rmtree(session_upload_dir)
             # shutil.rmtree(session_output_dir)
 
             return jsonify({
                 'status': 'success',
-                'download_url': f'/api/download/{session_id}_result.zip'
+                'download_url': f'/api/download/{output_filename}'
             })
 
     except Exception as e:

@@ -14,6 +14,7 @@ args = [
     'web/app.py',                      # 主脚本
     '--name=MCC_Tool',                 # 可执行文件名称
     '--onefile',                       # 创建单个可执行文件
+    '--icon=icon.png',                 # 使用自定义图标
     '--noconsole',                     # 隐藏控制台窗口 (可选, 也许先保留用于调试)
     '--add-data=web/templates;templates', # 包含 HTML 模板
     '--add-data=web/static;static',       # 包含静态文件 (CSS/JS)
