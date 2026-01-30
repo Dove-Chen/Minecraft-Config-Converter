@@ -417,11 +417,17 @@ class IAConverter(BaseConverter):
             max_scale = max(s_x, s_y, s_z)
             translation_y = translation_y * max_scale
 
+        translation_x = 0
+        translation_z = 0
         # X/Z 轴偏移: 针对偶数尺寸的家具进行中心修正
         # 如果尺寸为偶数，模型中心通常在方块边缘，需要偏移 0.5 才能对齐网格
-        translation_x = 0.5 if width % 2 == 0 else 0
-        translation_z = -0.5 if length % 2 == 0 else 0
-            
+        # translation_x = 0.5 if width % 2 == 0 else 0
+        # translation_z = -0.5 if length % 2 == 0 else 0
+        
+        #临时性针对大型家具模型偏移措施[后期应当修改]
+        if height == 2 and width == 3 and length == 2:
+            translation_z = 0.5
+
         element_entry = {
             "item": ce_id,
             "display-transform": "NONE",
