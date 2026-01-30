@@ -90,6 +90,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (targetSelect) {
             formData.append('target_format', targetSelect.value);
         }
+
+        const namespaceInput = document.getElementById('namespace-input');
+        if (namespaceInput && namespaceInput.value.trim()) {
+            formData.append('namespace', namespaceInput.value.trim());
+        }
         
         progressSection.style.display = 'block';
         updateProgress(0, "正在转换...");
@@ -174,6 +179,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         <select id="target-format-select" class="target-select" ${report.available_targets.length === 0 ? 'disabled' : ''}>
                             ${targetOptions}
                         </select>
+                    </div>
+                    <div class="report-item">
+                        <span class="label">命名空间 (可选):</span>
+                        <input type="text" id="namespace-input" class="text-input" placeholder="留空使用默认值" title="仅允许小写字母、数字、下划线、连字符和点">
                     </div>
                     <div class="report-item">
                         <span class="label">包含内容:</span>

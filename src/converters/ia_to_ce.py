@@ -170,9 +170,11 @@ class IAConverter(BaseConverter):
             ce_items = []
             for item in ia_items:
                 if ":" in item:
-                    # 检查是否匹配当前命名空间，否则保持原样或调整
-                    if item.startswith(f"{self.namespace}:"):
-                        ce_items.append(item)
+                    # 如果包含了命名空间，则尝试替换为当前命名空间
+                    parts = item.split(":")
+                    if len(parts) == 2:
+                        # 强制替换命名空间为当前目标命名空间
+                        ce_items.append(f"{self.namespace}:{parts[1]}")
                     else:
                          ce_items.append(item)
                 else:
@@ -180,7 +182,11 @@ class IAConverter(BaseConverter):
 
             # 映射图标
             icon = cat_data.get("icon", "minecraft:stone")
-            if ":" not in icon:
+            if ":" in icon:
+                 parts = icon.split(":")
+                 if len(parts) == 2 and parts[0] != "minecraft":
+                      icon = f"{self.namespace}:{parts[1]}"
+            else:
                  icon = f"{self.namespace}:{icon}"
 
             ce_category = {

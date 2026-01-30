@@ -195,7 +195,7 @@ header p {
     font-size: 0.9rem;
 }
 
-.target-select {
+.target-select, .text-input {
     background-color: #202225;
     color: white;
     border: 1px solid #4F545C;
@@ -203,4 +203,5 @@ header p {
     padding: 4px 8px;
     width: 100%;
     font-size: 0.95rem;
+    box-sizing: border-box;
 }

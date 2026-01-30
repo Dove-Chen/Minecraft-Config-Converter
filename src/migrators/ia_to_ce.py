@@ -151,23 +151,45 @@ class IAMigrator(BaseMigrator):
             # 修复纹理路径
             # IA: <namespace>:<path> (相对于 textures/)
             # CE: <namespace>:item/<path> (我们将它们移动到了 item/)
+            # 
+            # 如果转换过程中更改了命名空间，
+            # 模型文件中的旧命名空间引用也必须更新为新的命名空间。
             
             if "textures" in data:
                 new_textures = {}
                 for key, val in data["textures"].items():
-                    # 检查是否是对该命名空间的引用
-                    if val.startswith(f"{self.namespace}:"):
-                        path_part = val.split(":", 1)[1]
-                        # 应用与 _migrate_textures 相同的逻辑
-                        if "layer" not in path_part and "armor" not in path_part:
-                             new_val = f"{self.namespace}:item/{path_part}"
+                    # 检查是否包含命名空间引用 (:)
+                    if ":" in val:
+                        parts = val.split(":", 1)
+                        ns = parts[0]
+                        path_part = parts[1]
+                        
+                        # 如果是外部引用 (minecraft 或其他)，保持原样
+                        if ns == "minecraft":
+                             new_textures[key] = val
+                             continue
+                             
+                        # 如果是旧命名空间（或者是当前处理的命名空间），我们需要更新它
+                        # 应用路径调整逻辑 (移动到 item/)
+                        if "layer" not in path_part and "armor" not in path_part and not path_part.startswith("item/"):
+                             new_path = f"item/{path_part}"
                         else:
-                             # 如果我们将护甲移动到了 entity/，模型通常不应引用它们 (护甲模型在引擎中硬编码)
-                             # 但如果是护甲图标的物品纹理:
-                             new_val = f"{self.namespace}:item/{path_part}"
+                             new_path = path_part
+                             
+                        new_val = f"{self.namespace}:{new_path}"
                         new_textures[key] = new_val
                     else:
-                        new_textures[key] = val
+                        # 没有命名空间（例如 "#texture" 引用或纯路径），保持原样或添加当前命名空间
+                        if val.startswith("#"):
+                             new_textures[key] = val
+                        else:
+                             # 可能是相对路径，加上命名空间
+                             if "layer" not in val and "armor" not in val and not val.startswith("item/"):
+                                  new_path = f"item/{val}"
+                             else:
+                                  new_path = val
+                             new_textures[key] = f"{self.namespace}:{new_path}"
+
                 data["textures"] = new_textures
             
             # 修复 overrides/predicates (如果有) (指向其他模型)
@@ -175,9 +197,15 @@ class IAMigrator(BaseMigrator):
                 for override in data["overrides"]:
                     if "model" in override:
                         model_val = override["model"]
-                        if model_val.startswith(f"{self.namespace}:"):
-                            path_part = model_val.split(":", 1)[1]
-                            override["model"] = f"{self.namespace}:item/{path_part}"
+                        if ":" in model_val:
+                            parts = model_val.split(":", 1)
+                            ns = parts[0]
+                            path_part = parts[1]
+                            
+                            if ns != "minecraft":
+                                if not path_part.startswith("item/"):
+                                    path_part = f"item/{path_part}"
+                                override["model"] = f"{self.namespace}:{path_part}"
 
             with open(dest_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)

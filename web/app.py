@@ -3,6 +3,7 @@ import os
 import shutil
 import zipfile
 import uuid
+import re
 from threading import Thread
 import time
 import yaml
@@ -226,7 +227,16 @@ def convert():
             # 准备输出路径
             # CraftEngine 输出结构: resources/<namespace>/...
             # 使用配置中的命名空间或默认值
-            namespace = ia_data.get("info", {}).get("namespace", "converted")
+            original_namespace = ia_data.get("info", {}).get("namespace", "converted")
+            namespace = original_namespace
+            
+            # 检查用户是否指定了命名空间
+            user_namespace = request.form.get('namespace')
+            if user_namespace:
+                # 验证命名空间规则: 0-9, a-z, _, -, .
+                if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
+                    return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+                namespace = user_namespace
 
             # 特殊处理：如果资源包结构是非标准的（直接包含 models/textures），则重组为标准结构
             # 这通常发生在 ia_resourcepack_path 指向了包含 models/textures 的根目录，但缺少 assets/<namespace> 包装的情况
@@ -255,6 +265,17 @@ def convert():
                         
                         # 更新资源包路径指向新的标准结构根目录
                         ia_resourcepack_path = restructured_root
+                else:
+                    # 标准结构：如果命名空间改变，尝试重命名文件夹以匹配新的命名空间
+                    if namespace != original_namespace:
+                        src_ns_path = os.path.join(assets_path, original_namespace)
+                        dst_ns_path = os.path.join(assets_path, namespace)
+                        if os.path.exists(src_ns_path) and not os.path.exists(dst_ns_path):
+                            try:
+                                print(f"Renaming resource pack namespace: {original_namespace} -> {namespace}")
+                                shutil.move(src_ns_path, dst_ns_path)
+                            except Exception as e:
+                                print(f"Warning: Failed to rename namespace folder: {e}")
             
             ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
             ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
