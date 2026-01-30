@@ -270,6 +270,11 @@ class IAConverter(BaseConverter):
                 elif slot == "chest": ce_item["material"] = "LEATHER_CHESTPLATE"
                 elif slot == "legs": ce_item["material"] = "LEATHER_LEGGINGS"
                 elif slot == "feet": ce_item["material"] = "LEATHER_BOOTS"
+            
+            # 处理 ID 中可能存在的命名空间
+            # 形式: namespace:id -> 移除 namespace 部分
+            if ":" in equipment_id:
+                 equipment_id = equipment_id.split(":")[1]
 
             ce_item["settings"] = {
                 "equipment": {
@@ -671,28 +676,39 @@ class IAConverter(BaseConverter):
             }
         
         # 情况 2: 从纹理生成模型
-        elif resource.get("generate") is True and resource.get("textures"):
-            # 使用第一个纹理路径作为模型路径的基础
+        elif resource.get("generate") is True:
+            textures = resource.get("textures")
             
-            texture_path = resource["textures"][0]
-            # 如果存在 .png 扩展名则移除 
-            if texture_path.endswith(".png"):
-                texture_path = texture_path[:-4]
-                
-            ce_item["model"] = {
-                "type": "minecraft:model",
-                "path": f"{self.namespace}:item/{texture_path}"
-            }
+            # 兼容 "texture" 字段 
+            if not textures and resource.get("texture"):
+                val = resource.get("texture")
+                if isinstance(val, list):
+                    textures = val
+                else:
+                    textures = [val]
 
-            # 注册此模型以进行生成
-            
-            model_key = f"item/{texture_path}.json"
-            self.generated_models[model_key] = {
-                "parent": "minecraft:item/generated",
-                "textures": {
-                    "layer0": f"{self.namespace}:item/{texture_path}"
+            if textures:
+                # 使用第一个纹理路径作为模型路径的基础
+                
+                texture_path = textures[0]
+                # 如果存在 .png 扩展名则移除 
+                if texture_path.endswith(".png"):
+                    texture_path = texture_path[:-4]
+                    
+                ce_item["model"] = {
+                    "type": "minecraft:model",
+                    "path": f"{self.namespace}:item/{texture_path}"
                 }
-            }
+
+                # 注册此模型以进行生成
+                
+                model_key = f"item/{texture_path}.json"
+                self.generated_models[model_key] = {
+                    "parent": "minecraft:item/generated",
+                    "textures": {
+                        "layer0": f"{self.namespace}:item/{texture_path}"
+                    }
+                }
 
     def _convert_equipments(self, equipments_data):
         for eq_key, eq_data in equipments_data.items():
