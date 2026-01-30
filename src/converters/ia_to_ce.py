@@ -583,6 +583,11 @@ class IAConverter(BaseConverter):
         
         # 情况 1: 显式模型路径
         if model_path:
+            # 如果 model_path 中包含命名空间 (例如 "namespace:path")，则移除命名空间部分
+            # 因为 CraftEngine 会自动拼接当前命名空间，或者我们手动拼接时避免重复
+            if ":" in model_path:
+                model_path = model_path.split(":")[1]
+                
             ce_item["model"] = {
                 "type": "minecraft:model",
                 "path": f"{self.namespace}:item/{model_path}"
