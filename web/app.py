@@ -5,6 +5,7 @@ import zipfile
 import uuid
 from threading import Thread
 import time
+import yaml
 
 # 导入核心逻辑
 import sys
@@ -141,14 +142,22 @@ def convert():
             ia_categories_configs = []
             ia_resourcepack_path = None
 
+            # 第一遍扫描：查找配置文件和标准资源包结构
             for root, dirs, files in os.walk(extract_dir):
-                # 检测资源包
-                if "resourcepack" in dirs:
-                    # 优先选择找到的最顶层 resourcepack 文件夹
-                    if ia_resourcepack_path is None:
-                        ia_resourcepack_path = os.path.join(root, "resourcepack")
+                # --- 资源包检测 ---
+                # 优先级 1: 显式的 "resourcepack" 目录
+                if "resourcepack" in dirs and ia_resourcepack_path is None:
+                    ia_resourcepack_path = os.path.join(root, "resourcepack")
                 
-                # 基于内容检测配置
+                # 优先级 2: 直接包含 assets 的目录
+                if "assets" in dirs and ia_resourcepack_path is None:
+                    ia_resourcepack_path = root
+
+                # 优先级 3: 直接包含 models 和 textures 的目录 (非标准结构)
+                if "models" in dirs and "textures" in dirs and ia_resourcepack_path is None:
+                    ia_resourcepack_path = root
+
+                # --- 配置文件检测 ---
                 for f in files:
                     if f.endswith(".yml") or f.endswith(".yaml"):
                         full_path = os.path.join(root, f)
@@ -163,9 +172,14 @@ def convert():
                                     ia_items_configs.append(full_path)
                                 elif "categories" in data:
                                     ia_categories_configs.append(full_path)
-                                # 如果需要添加更多启发式方法
                         except Exception:
-                            continue # 跳过非 yaml 或格式错误的文件
+                            continue
+
+            # 如果仍未找到资源包，尝试寻找 textures/models 的父级 (处理非标准结构)
+            if ia_resourcepack_path is None:
+                # 如果有配置文件，默认为提取根目录
+                if ia_items_configs:
+                    ia_resourcepack_path = extract_dir
 
             if not ia_items_configs:
                  return jsonify({'error': '未能找到包含物品定义的配置文件 (items/equipments)'}), 400
@@ -211,8 +225,36 @@ def convert():
 
             # 准备输出路径
             # CraftEngine 输出结构: resources/<namespace>/...
-            # 我们将使用配置中的命名空间或默认值
+            # 使用配置中的命名空间或默认值
             namespace = ia_data.get("info", {}).get("namespace", "converted")
+
+            # 特殊处理：如果资源包结构是非标准的（直接包含 models/textures），则重组为标准结构
+            # 这通常发生在 ia_resourcepack_path 指向了包含 models/textures 的根目录，但缺少 assets/<namespace> 包装的情况
+            if ia_resourcepack_path and os.path.exists(ia_resourcepack_path):
+                # 检查标准结构是否存在
+                assets_path = os.path.join(ia_resourcepack_path, "assets")
+                if not os.path.exists(assets_path):
+                    # 检查是否有models 或 textures
+                    has_models = os.path.exists(os.path.join(ia_resourcepack_path, "models"))
+                    has_textures = os.path.exists(os.path.join(ia_resourcepack_path, "textures"))
+                    
+                    if has_models or has_textures:
+                        print(f"检测到非标准资源包结构，正在重组为 assets/{namespace}/...")
+                        # 创建一个新的临时目录作为资源包根目录，以避免污染原始提取目录或处理路径冲突
+                        restructured_root = os.path.join(session_upload_dir, "restructured_rp")
+                        target_ns_dir = os.path.join(restructured_root, "assets", namespace)
+                        os.makedirs(target_ns_dir, exist_ok=True)
+                        
+                        # 移动文件夹
+                        for folder_name in ["models", "textures", "sounds"]:
+                            src_folder = os.path.join(ia_resourcepack_path, folder_name)
+                            if os.path.exists(src_folder):
+                                dst_folder = os.path.join(target_ns_dir, folder_name)
+                                # 移动文件夹
+                                shutil.move(src_folder, dst_folder)
+                        
+                        # 更新资源包路径指向新的标准结构根目录
+                        ia_resourcepack_path = restructured_root
             
             ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
             ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
@@ -253,8 +295,6 @@ def download_file(filename):
 
 import webbrowser
 from threading import Timer, Lock
-import time
-import yaml
 
 # ... existing imports ...
 
