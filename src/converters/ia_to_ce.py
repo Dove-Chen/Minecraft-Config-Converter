@@ -458,33 +458,36 @@ class IAConverter(BaseConverter):
             
             # 只有 solid 的家具才生成 shulker 碰撞箱矩阵
             # 非 solid 的家具可能需要 interaction 类型 (暂不处理或生成单个)
-            
             # 特殊情况: 如果是可坐的 (sit_data)，使用 interaction 类型以支持座位
             # 并且根据 solid 属性设置 blocks-building
             if sit_data:
                 # 提取座位高度
-                # IA 默认为 0 (相对于家具底部) ? 
-                # 通常 IA sit_height 是相对于地面的高度 (e.g. 0.8)
-                # CE translation_y = height / 2.0 (中心)
-                # CE interaction hitbox 是相对于家具中心的吗?
-                # 假设 CE seats 坐标是相对于 hitbox 的
-                
-                # 简单的转换逻辑:
-                # CE seat Y = IA sit_height - 0.85 (经验值, 微调)
-                # 或者尝试 IA sit_height - 0.5 (如果 Y 轴原点在中心)
                 
                 ia_sit_height = sit_data.get("sit_height", 0.5)
-                # 尝试对齐示例: 0.8 -> -0.05.  diff = 0.85
                 ce_seat_y = ia_sit_height - 0.85
                 
+                # 根据 width 生成多个座位
+                # 逻辑：在 X 轴上分布座位
+                seats = []
+                w_range = int(round(width))
+                if w_range <= 1:
+                    seats.append(f"0,{ce_seat_y:g},0")
+                else:
+                    # 居中分布
+                    # 例如 width=3: -1, 0, 1
+                    # width=2: -0.5, 0.5
+                    for i in range(w_range):
+                        offset_x = i - (w_range - 1) / 2.0
+                        seats.append(f"{offset_x:g},{ce_seat_y:g},0")
+
                 hitboxes.append({
                     "position": "0,0,0",
                     "type": "interaction",
                     "blocks-building": is_solid,
-                    "width": width, # 使用家具定义的宽度
+                    "width": width,
                     "height": height,
                     "interactive": True,
-                    "seats": [f"0,{ce_seat_y:g},0"]
+                    "seats": seats
                 })
             
             elif is_solid:
