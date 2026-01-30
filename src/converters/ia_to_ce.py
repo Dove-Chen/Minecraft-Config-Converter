@@ -396,32 +396,51 @@ class IAConverter(BaseConverter):
         else:
             translation_y = height / 2.0
         
-        # 针对 item_frame 实体的特殊修正
-        # ItemFrame 家具通常需要额外的 Y 轴偏移以避免陷地
-        # if entity_type == "item_frame" and placement_type == "ground" and height >1:
-        #     position_y = 1
+        # 处理 Scale (提前处理以便影响 Translation)
+        scale_data = None
+        s_x, s_y, s_z = 1.0, 1.0, 1.0
+        
+        # 优先检查 item_display 的 display_transformation.scale
+        if "display_transformation" in furniture_data and "scale" in furniture_data["display_transformation"]:
+             scale_data = furniture_data["display_transformation"]["scale"]
+        # 其次检查直接的 scale 属性 (向后兼容或 armor_stand)
+        elif "scale" in furniture_data:
+            scale_data = furniture_data["scale"]
+            
+        if scale_data and isinstance(scale_data, dict):
+            s_x = scale_data.get("x", 1.0)
+            s_y = scale_data.get("y", 1.0)
+            s_z = scale_data.get("z", 1.0)
+            
+            # 应用 Scale 修正到 Translation Y
+            # 逻辑: translation_y = original_translation_y * max(scale)
+            max_scale = max(s_x, s_y, s_z)
+            translation_y = translation_y * max_scale
 
         # X/Z 轴偏移: 针对偶数尺寸的家具进行中心修正
         # 如果尺寸为偶数，模型中心通常在方块边缘，需要偏移 0.5 才能对齐网格
         translation_x = 0.5 if width % 2 == 0 else 0
         translation_z = -0.5 if length % 2 == 0 else 0
             
+        element_entry = {
+            "item": ce_id,
+            "display-transform": "NONE",
+            "shadow-radius": 0.4,
+            "shadow-strength": 0.5,
+            "billboard": "FIXED",
+            "translation": f"{translation_x:g},{translation_y:g},{translation_z:g}"
+        }
+
+        if scale_data:
+             element_entry["scale"] = f"{s_x:g},{s_y:g},{s_z:g}"
+
         block_config = {
             "loot-spawn-offset": "0,0.4,0",
             "rules": {
                 "rotation": "ANY",
                 "alignment": "ANY"
             },
-            "elements": [
-                {
-                    "item": ce_id,
-                    "display-transform": "NONE",
-                    "shadow-radius": 0.4,
-                    "shadow-strength": 0.5,
-                    "billboard": "FIXED",
-                    "translation": f"{translation_x:g},{translation_y:g},{translation_z:g}"
-                }
-            ]
+            "elements": [element_entry]
         }
         
         # 处理 Hitbox
