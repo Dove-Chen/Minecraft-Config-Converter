@@ -5,7 +5,7 @@
 </h1>
 
 ##  MCC Tool
-MCC（Minecraft Configuration Converter） 是一个用于分析和转换 Minecraft 服务器插件配置的工具。
+MCC（Minecraft Config Converter） 是一个用于分析和转换 Minecraft 服务器插件配置的工具。
 ## 软件适配进度
 | 插件       | ItemsAdder | CraftEngine | Nexo |
 |------------|------------|-------------|------|
