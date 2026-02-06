@@ -442,8 +442,8 @@ class IAConverter(BaseConverter):
         element_entry = {
             "item": ce_id,
             "display-transform": "NONE",
-            "shadow-radius": 0.4,
-            "shadow-strength": 0.5,
+            # "shadow-radius": 0.4,
+            # "shadow-strength": 0.5,
             "billboard": "FIXED",
             "translation": f"{translation_x:g},{translation_y:g},{translation_z:g}"
         }
@@ -461,8 +461,8 @@ class IAConverter(BaseConverter):
         block_config = {
             "loot-spawn-offset": "0,0.4,0",
             "rules": {
-                "rotation": "ANY",
-                "alignment": "ANY"
+                "rotation": "eight",
+                "alignment": "center"
             },
             "elements": [element_entry]
         }
