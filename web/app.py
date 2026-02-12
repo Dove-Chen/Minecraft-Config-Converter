@@ -143,8 +143,23 @@ def convert():
             ia_categories_configs = []
             ia_resourcepack_path = None
 
-            # 第一遍扫描：查找配置文件和标准资源包结构
+            # 0. 确定扫描根目录
+            scan_root = extract_dir
+            found_ia_dir = False
             for root, dirs, files in os.walk(extract_dir):
+                for d in dirs:
+                    if d.lower() == "itemsadder":
+                        scan_root = os.path.join(root, d)
+                        found_ia_dir = True
+                        break
+                if found_ia_dir:
+                    break
+            
+            if found_ia_dir:
+                 print(f"Detected ItemsAdder root at: {scan_root}")
+
+            # 第一遍扫描：查找配置文件和标准资源包结构
+            for root, dirs, files in os.walk(scan_root):
                 # --- 资源包检测 ---
                 # 优先级 1: 显式的 "resourcepack" 目录
                 if "resourcepack" in dirs and ia_resourcepack_path is None:
