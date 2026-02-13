@@ -451,7 +451,7 @@ class IAConverter(BaseConverter):
 
         # 针对墙面家具的修正
         if placement_type == "wall":
-            element_entry["position"] = "0.5,0,0.5"
+            element_entry["position"] = "0,0,0.5"
         # 针对天花板家具的修正
         elif placement_type == "ceiling":
             element_entry["position"] = "0,-2,0"
@@ -470,7 +470,8 @@ class IAConverter(BaseConverter):
         
         # 处理 Hitbox
         #将家具拆分为多个 1x1 的 Shulker 碰撞箱
-        if "hitbox" in furniture_data:
+        # 墙面家具不需要碰撞箱
+        if "hitbox" in furniture_data and placement_type != "wall":
             ia_hitbox = furniture_data["hitbox"]
             is_solid = furniture_data.get("solid", True)
             
