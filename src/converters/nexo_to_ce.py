@@ -210,26 +210,37 @@ class NexoConverter(BaseConverter):
         elif material.endswith("_LEGGINGS"): slot = "legs"
         elif material.endswith("_BOOTS"): slot = "feet"
 
-        # 如果定义了自定义盔甲纹理
-        if custom_armor:
-            # 我们需要注册这些纹理以进行迁移
-            layer1 = custom_armor.get("layer1")
-            layer2 = custom_armor.get("layer2")
-            
-            if layer1: self._register_equipment_texture(layer1, is_leggings=False)
-            if layer2: self._register_equipment_texture(layer2, is_leggings=True)
+        layer1 = custom_armor.get("layer1")
+        layer2 = custom_armor.get("layer2")
+        texture_path = pack.get("texture") or custom_armor.get("texture")
 
-            texture_path = custom_armor.get("texture") or layer1
-            asset_id = self._normalize_equipment_key(texture_path) or f"armor_{slot}"
-            
-            ce_item["settings"] = {
-                "equipment": {
-                    "asset-id": f"{self.namespace}:{asset_id}",
-                    "slot": slot
-                }
+        if layer1:
+            self._register_equipment_texture(layer1, is_leggings=False)
+        if layer2:
+            self._register_equipment_texture(layer2, is_leggings=True)
+
+        asset_seed = custom_armor.get("id") or custom_armor.get("asset_id") or layer1 or layer2 or texture_path
+        asset_id = self._infer_armor_asset_id(asset_seed, slot)
+        equipment_ref = f"{self.namespace}:{asset_id}"
+
+        ce_item["settings"] = {
+            "equipment": {
+                "asset-id": equipment_ref,
+                "slot": slot
             }
+        }
 
-        self._handle_generic_model(ce_item, pack)
+        ce_equipment = self.ce_config["equipments"].get(equipment_ref, {"type": "component"})
+        if layer1:
+            ce_equipment["humanoid"] = self._normalize_equipment_texture_path(layer1, is_leggings=False)
+        if layer2:
+            ce_equipment["humanoid-leggings"] = self._normalize_equipment_texture_path(layer2, is_leggings=True)
+        self.ce_config["equipments"][equipment_ref] = ce_equipment
+
+        if texture_path:
+            ce_item["textures"] = [self._normalize_armor_item_texture(texture_path)]
+        else:
+            self._handle_generic_model(ce_item, pack)
 
     def _handle_furniture(self, ce_item, nexo_data, ce_id):
         mechanics = nexo_data.get("Mechanics", {})
@@ -543,3 +554,59 @@ class NexoConverter(BaseConverter):
         if path.startswith("textures/"):
             path = path[len("textures/"):]
         return path
+
+    def _normalize_equipment_texture_path(self, raw_path, is_leggings=False):
+        if not raw_path:
+            return f"{self.namespace}:entity/equipment/humanoid/unknown"
+        path = str(raw_path)
+        if ":" in path:
+            path = path.split(":", 1)[1]
+        if path.endswith(".png"):
+            path = path[:-4]
+        path = path.replace("\\", "/").lstrip("/")
+        if path.startswith("textures/"):
+            path = path[len("textures/"):]
+        parts = [p for p in path.split("/") if p]
+        if parts and parts[0] == self.namespace:
+            parts = parts[1:]
+        subpath = parts[-1] if parts else "unknown"
+        target_folder = "humanoid_leggings" if is_leggings else "humanoid"
+        final_path = f"entity/equipment/{target_folder}/{subpath}" if subpath else f"entity/equipment/{target_folder}"
+        return f"{self.namespace}:{final_path}"
+
+    def _normalize_armor_item_texture(self, raw_path):
+        path = str(raw_path)
+        if ":" in path:
+            path = path.split(":", 1)[1]
+        path = path.replace("\\", "/").lstrip("/")
+        if path.endswith(".png"):
+            path = path[:-4]
+        if path.startswith("textures/"):
+            path = path[len("textures/"):]
+        if path.startswith(f"{self.namespace}/"):
+            path = path[len(self.namespace) + 1:]
+        if path.startswith("item/"):
+            final_path = path
+        else:
+            final_path = f"item/{path}"
+        return f"{self.namespace}:{final_path}"
+
+    def _infer_armor_asset_id(self, raw_path, slot):
+        if not raw_path:
+            return f"armor_{slot}"
+        normalized = self._normalize_equipment_key(raw_path)
+        if not normalized:
+            return f"armor_{slot}"
+        parts = [p for p in normalized.split("/") if p]
+        if parts and parts[0] == self.namespace:
+            parts = parts[1:]
+        if "armor" in parts:
+            idx = parts.index("armor")
+            if idx > 0:
+                return parts[idx - 1]
+        basename = parts[-1] if parts else ""
+        for suffix in ["_armor_layer_1", "_armor_layer_2", "_layer_1", "_layer_2", "_helmet", "_chestplate", "_leggings", "_boots"]:
+            if basename.endswith(suffix):
+                basename = basename[:-len(suffix)]
+                break
+        return basename or f"armor_{slot}"

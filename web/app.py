@@ -172,6 +172,81 @@ def convert():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+def _extract_nexo_namespace_from_path(value):
+    if not value or not isinstance(value, str):
+        return None
+    path = value
+    if ":" in path:
+        path = path.split(":", 1)[1]
+    path = path.replace("\\", "/").lstrip("/")
+    if not path:
+        return None
+    first = path.split("/", 1)[0].strip().lower()
+    if re.match(r'^[0-9a-z_.-]+$', first):
+        return first
+    return None
+
+def _infer_nexo_namespace_from_data(nexo_data):
+    scores = {}
+    if not isinstance(nexo_data, dict):
+        return None
+    for item_data in nexo_data.values():
+        if not isinstance(item_data, dict):
+            continue
+        pack = item_data.get("Pack", {})
+        if isinstance(pack, dict):
+            model_ns = _extract_nexo_namespace_from_path(pack.get("model"))
+            if model_ns:
+                scores[model_ns] = scores.get(model_ns, 0) + 3
+            custom_armor = pack.get("CustomArmor", {})
+            if isinstance(custom_armor, dict):
+                for key in ("layer1", "layer2", "texture"):
+                    armor_ns = _extract_nexo_namespace_from_path(custom_armor.get(key))
+                    if armor_ns:
+                        scores[armor_ns] = scores.get(armor_ns, 0) + 2
+            texture_ns = _extract_nexo_namespace_from_path(pack.get("texture"))
+            if texture_ns:
+                scores[texture_ns] = scores.get(texture_ns, 0) + 2
+    if not scores:
+        return None
+    return max(scores.items(), key=lambda x: x[1])[0]
+
+def _infer_nexo_namespace_from_pack(nexo_resourcepack_path):
+    if not nexo_resourcepack_path:
+        return None
+    assets_root = os.path.join(nexo_resourcepack_path, "assets")
+    scores = {}
+    candidate_roots = [
+        os.path.join(assets_root, "minecraft", "models"),
+        os.path.join(assets_root, "minecraft", "textures")
+    ]
+    for root in candidate_roots:
+        if not os.path.isdir(root):
+            continue
+        for ns in os.listdir(root):
+            ns_path = os.path.join(root, ns)
+            if not os.path.isdir(ns_path):
+                continue
+            if not re.match(r'^[0-9a-z_.-]+$', ns):
+                continue
+            file_count = 0
+            for _, _, files in os.walk(ns_path):
+                file_count += len(files)
+            if file_count > 0:
+                scores[ns] = scores.get(ns, 0) + file_count
+    if not scores:
+        return None
+    return max(scores.items(), key=lambda x: x[1])[0]
+
+def _resolve_nexo_namespace(nexo_data, fallback_namespace, nexo_resourcepack_path):
+    data_ns = _infer_nexo_namespace_from_data(nexo_data)
+    if data_ns:
+        return data_ns
+    pack_ns = _infer_nexo_namespace_from_pack(nexo_resourcepack_path)
+    if pack_ns:
+        return pack_ns
+    return fallback_namespace
+
 def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
     # 1. 扫描 Nexo 配置和资源
     nexo_items_configs = []
@@ -231,21 +306,22 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
         converter.save_config(ce_config_dir)
         
     else:
-        # 用户未指定命名空间，使用文件名作为命名空间
+        grouped_data = {}
         for config_path in nexo_items_configs:
             data = safe_load_yaml(config_path)
             if not isinstance(data, dict):
                 continue
             
-            # 从文件名获取命名空间
             filename = os.path.basename(config_path)
-            namespace = os.path.splitext(filename)[0]
-            # 简单的命名空间清理
-            namespace = re.sub(r'[^0-9a-z_.-]', '_', namespace.lower())
-            
-            # 每个文件独立转换
+            fallback_namespace = os.path.splitext(filename)[0]
+            fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', fallback_namespace.lower())
+            namespace = _resolve_nexo_namespace(data, fallback_namespace, nexo_resourcepack_path)
+            if namespace not in grouped_data:
+                grouped_data[namespace] = {}
+            grouped_data[namespace].update(data)
+
+        for namespace, merged_data in grouped_data.items():
             converter = NexoConverter()
-            
             ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
             ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
             ce_res_dir = os.path.join(ce_output_base, "resourcepack")
@@ -253,7 +329,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
             if nexo_resourcepack_path:
                 converter.set_resource_paths(nexo_resourcepack_path, ce_res_dir)
             
-            converter.convert(data, namespace=namespace)
+            converter.convert(merged_data, namespace=namespace)
             converter.save_config(ce_config_dir)
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format)

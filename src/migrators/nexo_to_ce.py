@@ -110,12 +110,21 @@ class NexoMigrator(BaseMigrator):
                         key_path = os.path.join(rel_path, file)
                         key = self._normalize_key(key_path)
                         
+                        should_inject_namespace = True
                         if key in self.armor_humanoid_keys:
-                            dest_rel = f"entity/equipment/humanoid/{key}.png"
+                            armor_name = os.path.basename(key)
+                            dest_rel = f"entity/equipment/humanoid/{armor_name}.png"
+                            should_inject_namespace = False
                         elif key in self.armor_leggings_keys:
-                            dest_rel = f"entity/equipment/humanoid_legging/{key}.png"
+                            armor_name = os.path.basename(key)
+                            dest_rel = f"entity/equipment/humanoid_leggings/{armor_name}.png"
+                            should_inject_namespace = False
                         elif self._is_armor_icon_texture(file, rel_path):
                             dest_rel = self._armor_icon_dest_rel(rel_path, file, include_ext=True)
+                            should_inject_namespace = False
+                        elif self._is_armor_texture(file, rel_path):
+                            dest_rel = self._armor_texture_dest_rel(rel_path, file, include_ext=True)
+                            should_inject_namespace = False
                         else:
                             # 默认为 item/
                             # 如果 rel_path 以 item 开头，保留它
@@ -128,7 +137,7 @@ class NexoMigrator(BaseMigrator):
                             dest_rel = os.path.join(base_rel, file)
 
                         # 如果源命名空间与目标命名空间不同，注入源命名空间到路径中
-                        if ns != self.namespace:
+                        if ns != self.namespace and should_inject_namespace:
                             dest_rel_norm = dest_rel.replace("\\", "/")
                             if dest_rel_norm.startswith("item/"):
                                 dest_rel = os.path.join("item", ns, dest_rel_norm[5:])
@@ -248,23 +257,35 @@ class NexoMigrator(BaseMigrator):
         # 调整路径以指向新位置 (item/...)
         key = self._normalize_key(path)
         if key in self.armor_humanoid_keys:
-            return f"entity/equipment/humanoid/{key}"
+            armor_name = os.path.basename(key)
+            return f"entity/equipment/humanoid/{armor_name}"
         elif key in self.armor_leggings_keys:
-            return f"entity/equipment/humanoid_legging/{key}"
+            armor_name = os.path.basename(key)
+            return f"entity/equipment/humanoid_leggings/{armor_name}"
         path_norm = self._normalize_key(path)
         name = os.path.basename(path_norm)
         rel_path = os.path.dirname(path_norm)
         if self._is_armor_icon_texture(name, rel_path):
             return self._armor_icon_dest_rel(rel_path, name, include_ext=False)
-        
-        if not path.startswith("item/") and not path.startswith("block/"):
-            return f"item/{path}"
-        return path
+        if self._is_armor_texture(name, rel_path):
+            return self._armor_texture_dest_rel(rel_path, name, include_ext=False)
+
+        path_clean = self._strip_namespace_prefix(path)
+        if not path_clean.startswith("item/") and not path_clean.startswith("block/"):
+            return f"item/{path_clean}"
+        return path_clean
 
     def _adjust_model_path(self, path):
-        if not path.startswith("item/") and not path.startswith("block/"):
-            return f"item/{path}"
-        return path
+        path_clean = self._strip_namespace_prefix(path)
+        if not path_clean.startswith("item/") and not path_clean.startswith("block/"):
+            return f"item/{path_clean}"
+        return path_clean
+
+    def _strip_namespace_prefix(self, path):
+        path_norm = str(path).replace("\\", "/").lstrip("/")
+        if path_norm.startswith(f"{self.namespace}/"):
+            return path_norm[len(self.namespace) + 1:]
+        return path_norm
 
     def _normalize_key(self, path):
         # 移除扩展名
@@ -293,6 +314,36 @@ class NexoMigrator(BaseMigrator):
             return True
         return False
 
+    def _is_leggings_texture(self, name, rel_path):
+        name_l = name.lower()
+        rel_l = rel_path.replace("\\", "/").lower()
+        if "layer_2" in name_l or "layer2" in name_l:
+            return True
+        if "legging" in name_l or "leggings" in name_l:
+            return True
+        if "legging" in rel_l or "leggings" in rel_l:
+            return True
+        if "layer_2" in rel_l or "layer2" in rel_l:
+            return True
+        return False
+
+    def _is_armor_texture(self, name, rel_path):
+        rel_l = rel_path.replace("\\", "/").lower()
+        if rel_l.startswith("item/") or rel_l == "item":
+            return False
+        if self._is_armor_icon_texture(name, rel_path):
+            return False
+        name_l = name.lower()
+        if "layer_1" in name_l or "layer_2" in name_l:
+            return True
+        if "armor" in name_l or "armour" in name_l:
+            return True
+        if "armor" in rel_l or "armour" in rel_l:
+            return True
+        if "equipment" in rel_l or "humanoid" in rel_l:
+            return True
+        return False
+
     def _armor_icon_dest_rel(self, rel_path, name, include_ext=False):
         rel_l = rel_path.replace("\\", "/")
         parts = [p for p in rel_l.split("/") if p and p != "."]
@@ -300,7 +351,7 @@ class NexoMigrator(BaseMigrator):
         prefix = [p for p in parts if p.lower() not in excluded]
         base = os.path.splitext(name)[0]
         if prefix:
-            path = os.path.join("item", "armor", *prefix, base)
+            path = os.path.join("item", *prefix, "armor", base)
         else:
             path = os.path.join("item", "armor", base)
         if include_ext:
@@ -308,8 +359,19 @@ class NexoMigrator(BaseMigrator):
             return f"{path}{ext}"
         return path
 
+    def _armor_texture_dest_rel(self, rel_path, name, include_ext=False):
+        target_folder = "humanoid_leggings" if self._is_leggings_texture(name, rel_path) else "humanoid"
+        base = os.path.splitext(name)[0]
+        path = os.path.join("entity", "equipment", target_folder, base)
+        if include_ext:
+            ext = os.path.splitext(name)[1]
+            return f"{path}{ext}"
+        return path
+
     def _inject_namespace_path(self, path, ns):
         path_norm = path.replace("\\", "/").lstrip("/")
+        if path_norm.startswith("entity/"):
+            return path_norm
         if path_norm.startswith("item/"):
             rest = path_norm[5:]
             if rest.startswith(f"{ns}/{ns}/"):
