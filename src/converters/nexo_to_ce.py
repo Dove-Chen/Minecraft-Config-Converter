@@ -245,10 +245,11 @@ class NexoConverter(BaseConverter):
     def _handle_furniture(self, ce_item, nexo_data, ce_id):
         mechanics = nexo_data.get("Mechanics", {})
         furniture = mechanics.get("furniture", {})
-        properties = furniture.get("properties", {})
         hitbox_config = furniture.get("hitbox", {})
-        seat_config = furniture.get("seat", {})
         limited_placing = furniture.get("limited_placing", {})
+        pack = nexo_data.get("Pack", {})
+        model_path = pack.get("model")
+        translation_y = self._calculate_model_y_translation(model_path)
 
         ce_item["behavior"] = {
             "type": "furniture_item",
@@ -269,113 +270,235 @@ class NexoConverter(BaseConverter):
             }
         }
 
-        # 放置
         placement = {}
-        # Nexo: 屋顶, 地板, 墙壁
-        # CE: 天花板, 地面, 墙壁
-        
-        # 从属性转换/缩放
-        trans_str = properties.get("translation", "0,0,0")
-        scale_str = properties.get("scale", "1,1,1")
-        rotation_type = properties.get("tracking_rotation", "FIXED") # FIXED -> 旋转: 任意?
-        
-        # 解析转换
-        try:
-            tx, ty, tz = map(float, trans_str.split(","))
-        except:
-            tx, ty, tz = 0, 0, 0
+        if not limited_placing:
+            limited_placing = {"floor": True}
+        if limited_placing.get("floor"):
+            placement["ground"] = self._create_nexo_placement_block(ce_id, furniture, hitbox_config, "ground", translation_y)
+        if limited_placing.get("wall"):
+            placement["wall"] = self._create_nexo_placement_block(ce_id, furniture, hitbox_config, "wall", translation_y)
+        if limited_placing.get("roof"):
+            placement["ceiling"] = self._create_nexo_placement_block(ce_id, furniture, hitbox_config, "ceiling", translation_y)
 
-        # 解析缩放
+        ce_item["behavior"]["furniture"]["placement"] = placement
+        
+        self._handle_generic_model(ce_item, pack)
+
+    def _calculate_model_y_translation(self, model_path):
+        if not model_path or not self.nexo_resourcepack_root:
+            return 0.5
+        model_file = self._resolve_nexo_model_file(model_path)
+        if not model_file or not os.path.exists(model_file):
+            return 0.5
         try:
-            sx, sy, sz = map(float, scale_str.split(","))
-        except:
-            sx, sy, sz = 1, 1, 1
-            
-        element_base = {
+            with open(model_file, 'r', encoding='utf-8') as f:
+                model_data = json.load(f)
+            elements = model_data.get("elements", [])
+            for el in elements:
+                from_y = el.get("from", [0, 0, 0])[1]
+                to_y = el.get("to", [0, 0, 0])[1]
+                if from_y < -7.0 or to_y < -7.0:
+                    return 1.5
+            return 0.5
+        except Exception:
+            return 0.5
+
+    def _resolve_nexo_model_file(self, model_path):
+        path = str(model_path).replace("\\", "/").lstrip("/")
+        ns = self.namespace
+        rel = path
+        if ":" in path:
+            ns, rel = path.split(":", 1)
+        else:
+            parts = [p for p in path.split("/") if p]
+            if len(parts) > 1:
+                ns = parts[0]
+                rel = "/".join(parts[1:])
+        if rel.endswith(".json"):
+            rel = rel[:-5]
+        candidates = [
+            os.path.join(self.nexo_resourcepack_root, "assets", ns, "models", f"{rel}.json"),
+            os.path.join(self.nexo_resourcepack_root, "assets", "minecraft", "models", ns, f"{rel}.json"),
+            os.path.join(self.nexo_resourcepack_root, ns, "models", f"{rel}.json"),
+            os.path.join(self.nexo_resourcepack_root, "models", f"{rel}.json")
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _parse_vec3(self, value, default=(0.0, 0.0, 0.0)):
+        if isinstance(value, str):
+            try:
+                x, y, z = map(float, value.split(","))
+                return x, y, z
+            except Exception:
+                return default
+        if isinstance(value, dict):
+            try:
+                return float(value.get("x", 0.0)), float(value.get("y", 0.0)), float(value.get("z", 0.0))
+            except Exception:
+                return default
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            try:
+                return float(value[0]), float(value[1]), float(value[2])
+            except Exception:
+                return default
+        return default
+
+    def _infer_hitbox_size_from_barriers(self, barriers):
+        points = []
+        for barrier in barriers or []:
+            if not isinstance(barrier, str):
+                continue
+            try:
+                bx, by, bz = map(float, barrier.split(","))
+                points.append((bx, by, bz))
+            except Exception:
+                continue
+        if not points:
+            return 1, 1, 1
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        zs = [p[2] for p in points]
+        width = max(1, int(round(max(xs) - min(xs) + 1)))
+        height = max(1, int(round(max(ys) - min(ys) + 1)))
+        length = max(1, int(round(max(zs) - min(zs) + 1)))
+        return width, height, length
+
+    def _create_nexo_placement_block(self, ce_id, furniture, hitbox_config, placement_type, base_translation_y):
+        properties = furniture.get("properties", {})
+        seat_config = furniture.get("seat", {})
+        barriers = hitbox_config.get("barriers", [])
+        width = int(hitbox_config.get("width", 1) or 1)
+        height = int(hitbox_config.get("height", 1) or 1)
+        length = int(hitbox_config.get("length", 1) or 1)
+        if width == 1 and height == 1 and length == 1:
+            width, height, length = self._infer_hitbox_size_from_barriers(barriers)
+
+        tx, _, tz = self._parse_vec3(properties.get("translation", "0,0,0"))
+        sx, sy, sz = self._parse_vec3(properties.get("scale", "1,1,1"), default=(1.0, 1.0, 1.0))
+        translation_y = base_translation_y * max(sx, sy, sz)
+        if placement_type in ("wall", "ceiling"):
+            translation_y = 0
+        translation_z = tz
+        if height == 2 and width == 3 and length == 2:
+            translation_z += 0.5
+
+        element_entry = {
             "item": ce_id,
             "display-transform": "NONE",
             "billboard": "FIXED",
-            "translation": f"{tx:g},{ty:g},{tz:g}",
+            "translation": f"{tx:g},{translation_y:g},{translation_z:g}"
         }
         if sx != 1 or sy != 1 or sz != 1:
-             element_base["scale"] = f"{sx:g},{sy:g},{sz:g}"
+            element_entry["scale"] = f"{sx:g},{sy:g},{sz:g}"
+        if placement_type == "wall":
+            element_entry["position"] = "0,0,0.5"
+        elif placement_type == "ceiling":
+            element_entry["position"] = "0,-1,0"
 
-        # 碰撞箱
+        block_config = {
+            "loot-spawn-offset": "0,0.4,0",
+            "rules": {
+                "rotation": "ANY",
+                "alignment": "ANY"
+            },
+            "elements": [element_entry]
+        }
+
         hitboxes = []
-        barriers = hitbox_config.get("barriers", [])
-        
-        # 转换障碍物 (潜影盒)
-        for barrier in barriers:
-            # 障碍物是 "x,y,z" 字符串
-            try:
-                bx, by, bz = map(float, barrier.split(","))
-                # CE 期望潜影盒的整数位置
-                hitboxes.append({
-                    "position": f"{int(bx)},{int(by)},{int(bz)}",
-                    "type": "shulker",
-                    "blocks-building": True,
-                    "interactive": True
-                })
-            except:
-                pass
-
-        # 处理座位
-        # Nexo 在 'seats' 字符串列表中定义座位
         seats_list = furniture.get("seats", [])
-        if seats_list:
-             # 需要为座位找到父碰撞箱或创建交互碰撞箱
-             
-             # 转换座位位置
-             ce_seats = []
-             for s in seats_list:
-                 try:
-                     sex, sey, sez = map(float, s.split(","))
-                     ce_seats.append(f"{sex:g},{sey:g},{sez:g}")
-                 except:
-                     pass
-             
-             if ce_seats:
-                 hitboxes.append({
-                     "position": "0,0,0",
-                     "type": "interaction",
-                     "blocks-building": True,
-                     "width": 1,
-                     "height": 1,
-                     "interactive": True,
-                     "seats": ce_seats
-                 })
+        ce_seats = []
+        seat_height_offset = 0.0
+        try:
+            seat_height_offset = float(seat_config.get("height", 0.0))
+        except Exception:
+            seat_height_offset = 0.0
+        for seat in seats_list:
+            if not isinstance(seat, str):
+                continue
+            try:
+                sx0, sy0, sz0 = map(float, seat.split(","))
+                ce_seats.append((sx0, sy0 + seat_height_offset, sz0))
+            except Exception:
+                continue
+        if len(ce_seats) == 1:
+            x0, y0, z0 = ce_seats[0]
+            ce_seats.append((x0 - 1, y0, z0))
+
+        if placement_type != "wall":
+            if ce_seats:
+                seat_hitbox_width = 0.7
+                seat_hitbox_height = 1.2
+                if "width" in hitbox_config:
+                    try:
+                        seat_hitbox_width = float(hitbox_config.get("width", 0.7))
+                    except Exception:
+                        seat_hitbox_width = 0.7
+                if "height" in hitbox_config:
+                    try:
+                        seat_hitbox_height = float(hitbox_config.get("height", 1.2))
+                    except Exception:
+                        seat_hitbox_height = 1.2
+                hitboxes.append({
+                    "position": "0,0,0",
+                    "type": "interaction",
+                    "blocks-building": True,
+                    "width": seat_hitbox_width,
+                    "height": seat_hitbox_height,
+                    "interactive": True,
+                    "seats": [f"{x:g},{y:g},{z:g}" for x, y, z in ce_seats]
+                })
+            else:
+                for barrier in barriers:
+                    if not isinstance(barrier, str):
+                        continue
+                    try:
+                        bx, by, bz = map(float, barrier.split(","))
+                        hitboxes.append({
+                            "position": f"{int(round(bx))},{int(round(by))},{int(round(bz))}",
+                            "type": "shulker",
+                            "blocks-building": True,
+                            "interactive": True
+                        })
+                    except Exception:
+                        continue
+
+        if placement_type == "ceiling" and not hitboxes:
+            hitboxes.append({
+                "type": "interaction",
+                "position": "0,-1,0",
+                "width": width,
+                "height": height,
+                "interactive": True,
+                "blocks-building": False
+            })
+        elif placement_type == "wall" and not hitboxes:
+            hitboxes.append({
+                "type": "interaction",
+                "position": "0,-0.5,0",
+                "width": width,
+                "height": height,
+                "interactive": True,
+                "blocks-building": False
+            })
         elif not hitboxes:
-             # 如果为空，添加默认交互碰撞箱
-             hitboxes.append({
+            hitboxes.append({
                 "position": "0,0,0",
                 "type": "interaction",
                 "blocks-building": True,
                 "interactive": True
             })
 
-        placement_config = {
-            "loot-spawn-offset": "0,0.4,0",
-            "rules": {
-                "rotation": "ANY",
-                "alignment": "ANY"
-            },
-            "elements": [element_base],
-        }
-        
-        if hitboxes:
-            placement_config["hitboxes"] = hitboxes
+        has_interaction = any(h.get("type") == "interaction" for h in hitboxes if isinstance(h, dict))
+        if has_interaction:
+            hitboxes = [h for h in hitboxes if isinstance(h, dict) and h.get("type") == "interaction"]
+        else:
+            hitboxes = [h for h in hitboxes if isinstance(h, dict) and h.get("type") == "shulker"]
 
-        if limited_placing.get("floor"):
-            placement["ground"] = placement_config
-        if limited_placing.get("wall"):
-            wall_config = placement_config.copy()
-            placement["wall"] = wall_config
-        if limited_placing.get("roof"):
-            placement["ceiling"] = placement_config
-
-        ce_item["behavior"]["furniture"]["placement"] = placement
-        
-        self._handle_generic_model(ce_item, nexo_data.get("Pack", {}))
+        block_config["hitboxes"] = hitboxes
+        return block_config
 
     def _handle_complex_item(self, ce_item, key, nexo_data, material):
         pack = nexo_data.get("Pack", {})
