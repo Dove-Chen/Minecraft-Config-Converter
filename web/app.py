@@ -186,27 +186,62 @@ def _extract_nexo_namespace_from_path(value):
         return first
     return None
 
+def _extract_nexo_explicit_namespace(value):
+    if not value or not isinstance(value, str):
+        return None
+    path = value.strip()
+    if ":" not in path:
+        return None
+    first = path.split(":", 1)[0].strip().lower()
+    if re.match(r'^[0-9a-z_.-]+$', first):
+        return first
+    return None
+
+def _get_case_insensitive_dict_value(data, *keys, default=None):
+    if not isinstance(data, dict):
+        return default
+    for key in keys:
+        if key in data:
+            return data[key]
+    lowered = {}
+    for k, v in data.items():
+        if isinstance(k, str):
+            lowered[k.lower()] = v
+    for key in keys:
+        if isinstance(key, str):
+            v = lowered.get(key.lower())
+            if v is not None:
+                return v
+    return default
+
 def _infer_nexo_namespace_from_data(nexo_data):
+    explicit_model_scores = {}
     scores = {}
     if not isinstance(nexo_data, dict):
         return None
     for item_data in nexo_data.values():
         if not isinstance(item_data, dict):
             continue
-        pack = item_data.get("Pack", {})
+        pack = _get_case_insensitive_dict_value(item_data, "Pack", "pack", default={})
         if isinstance(pack, dict):
-            model_ns = _extract_nexo_namespace_from_path(pack.get("model"))
+            model_value = _get_case_insensitive_dict_value(pack, "model", default=None)
+            explicit_model_ns = _extract_nexo_explicit_namespace(model_value)
+            if explicit_model_ns:
+                explicit_model_scores[explicit_model_ns] = explicit_model_scores.get(explicit_model_ns, 0) + 1
+            model_ns = _extract_nexo_namespace_from_path(model_value)
             if model_ns:
                 scores[model_ns] = scores.get(model_ns, 0) + 3
-            custom_armor = pack.get("CustomArmor", {})
+            custom_armor = _get_case_insensitive_dict_value(pack, "CustomArmor", "custom_armor", "customArmor", default={})
             if isinstance(custom_armor, dict):
                 for key in ("layer1", "layer2", "texture"):
-                    armor_ns = _extract_nexo_namespace_from_path(custom_armor.get(key))
+                    armor_ns = _extract_nexo_namespace_from_path(_get_case_insensitive_dict_value(custom_armor, key, default=None))
                     if armor_ns:
                         scores[armor_ns] = scores.get(armor_ns, 0) + 2
-            texture_ns = _extract_nexo_namespace_from_path(pack.get("texture"))
+            texture_ns = _extract_nexo_namespace_from_path(_get_case_insensitive_dict_value(pack, "texture", default=None))
             if texture_ns:
                 scores[texture_ns] = scores.get(texture_ns, 0) + 2
+    if explicit_model_scores:
+        return max(explicit_model_scores.items(), key=lambda x: x[1])[0]
     if not scores:
         return None
     return max(scores.items(), key=lambda x: x[1])[0]

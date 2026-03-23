@@ -126,6 +126,95 @@ class NexoConverter(BaseConverter):
         }
         self.ce_config["categories"][cat_id] = ce_category
 
+    def _get_dict_value(self, data, *keys, default=None):
+        if not isinstance(data, dict):
+            return default
+        for key in keys:
+            if key in data:
+                return data[key]
+        lowered = {}
+        for k, v in data.items():
+            if isinstance(k, str):
+                lowered[k.lower()] = v
+        for key in keys:
+            if isinstance(key, str):
+                v = lowered.get(key.lower())
+                if v is not None:
+                    return v
+        return default
+
+    def _get_pack_data(self, data):
+        pack = self._get_dict_value(data, "Pack", "pack", default={})
+        if isinstance(pack, dict):
+            return pack
+        return {}
+
+    def _get_mechanics_data(self, data):
+        mechanics = self._get_dict_value(data, "Mechanics", "mechanics", default={})
+        if isinstance(mechanics, dict):
+            return mechanics
+        return {}
+
+    def _get_custom_armor_data(self, pack):
+        custom_armor = self._get_dict_value(pack, "CustomArmor", "custom_armor", "customArmor", default={})
+        if isinstance(custom_armor, dict):
+            return custom_armor
+        return {}
+
+    def _split_resource_path(self, raw_path):
+        if not raw_path:
+            return self.namespace, None
+        path = str(raw_path).replace("\\", "/").lstrip("/")
+        ns = self.namespace
+        rel = path
+        if ":" in path:
+            ns, rel = path.split(":", 1)
+        return ns, rel
+
+    def _texture_exists(self, raw_path):
+        if not raw_path or not self.nexo_resourcepack_root:
+            return False
+        ns, rel = self._split_resource_path(raw_path)
+        if not rel:
+            return False
+        rel_path = rel[:-4] if rel.endswith(".png") else rel
+        candidates = [
+            os.path.join(self.nexo_resourcepack_root, "assets", ns, "textures", f"{rel_path}.png"),
+            os.path.join(self.nexo_resourcepack_root, "assets", "minecraft", "textures", ns, f"{rel_path}.png"),
+            os.path.join(self.nexo_resourcepack_root, ns, "textures", f"{rel_path}.png"),
+            os.path.join(self.nexo_resourcepack_root, "textures", f"{rel_path}.png")
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return True
+        return False
+
+    def _infer_armor_layers(self, item_key, icon_texture):
+        if not icon_texture:
+            return None, None
+        ns, rel = self._split_resource_path(icon_texture)
+        if not rel:
+            return None, None
+        directory = os.path.dirname(rel).replace("\\", "/")
+        basename = os.path.splitext(os.path.basename(rel))[0]
+        item_base = re.sub(r"_(helmet|chestplate|leggings|boots)$", "", str(item_key), flags=re.IGNORECASE)
+        base_candidates = [item_base]
+        stripped = re.sub(r"_(helmet|chestplate|leggings|boots)(_icon)?$", "", basename, flags=re.IGNORECASE)
+        if stripped and stripped not in base_candidates:
+            base_candidates.append(stripped)
+        for base in base_candidates:
+            for folder in [directory, directory.replace("/armor", "/armors"), directory.replace("/armors", "/armor"), "armor", "armors"]:
+                folder = folder.strip("/")
+                if folder:
+                    layer1 = f"{ns}:{folder}/{base}_armor_layer_1"
+                    layer2 = f"{ns}:{folder}/{base}_armor_layer_2"
+                else:
+                    layer1 = f"{ns}:{base}_armor_layer_1"
+                    layer2 = f"{ns}:{base}_armor_layer_2"
+                if self._texture_exists(layer1):
+                    return layer1, layer2 if self._texture_exists(layer2) else None
+        return None, None
+
     def _convert_items(self, items_data):
         if not isinstance(items_data, dict):
             return
@@ -137,7 +226,7 @@ class NexoConverter(BaseConverter):
                     continue
                 
                 # 检查是否为物品
-                if "material" in value or "itemname" in value:
+                if "material" in value or "itemname" in value or "customname" in value:
                     self._convert_item(key, value)
                 else:
                     # 递归
@@ -149,7 +238,7 @@ class NexoConverter(BaseConverter):
         ce_id = f"{self.namespace}:{key}"
         
         material = data.get("material", "STONE")
-        item_name = data.get("itemname", key)
+        item_name = self._get_dict_value(data, "itemname", "customname", default=key)
         
         ce_item = {
             "material": material,
@@ -167,13 +256,15 @@ class NexoConverter(BaseConverter):
         if "model" in data:
              ce_item["custom-model-data"] = data.get("model")
 
-        pack = data.get("Pack", {})
-        mechanics = data.get("Mechanics", {})
+        pack = self._get_pack_data(data)
+        mechanics = self._get_mechanics_data(data)
         
         # 确定物品类型并处理特定逻辑
+        furniture_data = self._get_dict_value(mechanics, "furniture", "Furniture", default={})
+
         if self._is_armor(material):
-            self._handle_armor(ce_item, data)
-        elif "furniture" in mechanics:
+            self._handle_armor(ce_item, key, data, pack)
+        elif isinstance(furniture_data, dict) and furniture_data:
             self._handle_furniture(ce_item, data, ce_id)
         elif self._is_complex_item(material):
             self._handle_complex_item(ce_item, key, data, material)
@@ -200,9 +291,10 @@ class NexoConverter(BaseConverter):
         suffixes = ["_HELMET", "_CHESTPLATE", "_LEGGINGS", "_BOOTS"]
         return any(material.endswith(s) for s in suffixes)
 
-    def _handle_armor(self, ce_item, nexo_data):
-        pack = nexo_data.get("Pack", {})
-        custom_armor = pack.get("CustomArmor", {})
+    def _handle_armor(self, ce_item, item_key, nexo_data, pack=None):
+        if pack is None:
+            pack = self._get_pack_data(nexo_data)
+        custom_armor = self._get_custom_armor_data(pack)
         
         slot = "head"
         material = ce_item["material"]
@@ -210,44 +302,55 @@ class NexoConverter(BaseConverter):
         elif material.endswith("_LEGGINGS"): slot = "legs"
         elif material.endswith("_BOOTS"): slot = "feet"
 
-        layer1 = custom_armor.get("layer1")
-        layer2 = custom_armor.get("layer2")
-        texture_path = pack.get("texture") or custom_armor.get("texture")
+        layer1 = self._get_dict_value(custom_armor, "layer1", "layer_1")
+        layer2 = self._get_dict_value(custom_armor, "layer2", "layer_2")
+        texture_path = self._get_dict_value(pack, "texture", default=None) or self._get_dict_value(custom_armor, "texture", default=None)
+        pack_textures = self._get_dict_value(pack, "textures", default=None)
+        if not texture_path and isinstance(pack_textures, list) and pack_textures:
+            texture_path = pack_textures[0]
+        if not layer1 and not layer2 and texture_path:
+            inferred_layer1, inferred_layer2 = self._infer_armor_layers(item_key, texture_path)
+            if inferred_layer1:
+                layer1 = inferred_layer1
+            if inferred_layer2:
+                layer2 = inferred_layer2
 
         if layer1:
             self._register_equipment_texture(layer1, is_leggings=False)
         if layer2:
             self._register_equipment_texture(layer2, is_leggings=True)
 
-        asset_seed = custom_armor.get("id") or custom_armor.get("asset_id") or layer1 or layer2 or texture_path
-        asset_id = self._infer_armor_asset_id(asset_seed, slot)
-        equipment_ref = f"{self.namespace}:{asset_id}"
+        has_custom_equipment = bool(layer1 or layer2 or self._get_dict_value(custom_armor, "id", "asset_id", "asset-id", default=None))
+        if has_custom_equipment:
+            asset_seed = self._get_dict_value(custom_armor, "id", "asset_id", "asset-id", default=None) or layer1 or layer2 or texture_path
+            asset_id = self._infer_armor_asset_id(asset_seed, slot)
+            equipment_ref = f"{self.namespace}:{asset_id}"
 
-        ce_item["settings"] = {
-            "equipment": {
-                "asset-id": equipment_ref,
-                "slot": slot
+            ce_item["settings"] = {
+                "equipment": {
+                    "asset-id": equipment_ref,
+                    "slot": slot
+                }
             }
-        }
 
-        ce_equipment = self.ce_config["equipments"].get(equipment_ref, {"type": "component"})
-        if layer1:
-            ce_equipment["humanoid"] = self._normalize_equipment_texture_path(layer1, is_leggings=False)
-        if layer2:
-            ce_equipment["humanoid-leggings"] = self._normalize_equipment_texture_path(layer2, is_leggings=True)
-        self.ce_config["equipments"][equipment_ref] = ce_equipment
+            ce_equipment = self.ce_config["equipments"].get(equipment_ref, {"type": "component"})
+            if layer1:
+                ce_equipment["humanoid"] = self._normalize_equipment_texture_path(layer1, is_leggings=False)
+            if layer2:
+                ce_equipment["humanoid-leggings"] = self._normalize_equipment_texture_path(layer2, is_leggings=True)
+            self.ce_config["equipments"][equipment_ref] = ce_equipment
 
         if texture_path:
             ce_item["textures"] = [self._normalize_armor_item_texture(texture_path)]
-        else:
+        if not texture_path:
             self._handle_generic_model(ce_item, pack)
 
     def _handle_furniture(self, ce_item, nexo_data, ce_id):
-        mechanics = nexo_data.get("Mechanics", {})
-        furniture = mechanics.get("furniture", {})
+        mechanics = self._get_mechanics_data(nexo_data)
+        furniture = self._get_dict_value(mechanics, "furniture", "Furniture", default={})
         hitbox_config = furniture.get("hitbox", {})
         limited_placing = furniture.get("limited_placing", {})
-        pack = nexo_data.get("Pack", {})
+        pack = self._get_pack_data(nexo_data)
         model_path = pack.get("model")
         translation_y = self._calculate_model_y_translation(model_path)
 
