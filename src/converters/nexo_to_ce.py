@@ -155,6 +155,12 @@ class NexoConverter(BaseConverter):
             return mechanics
         return {}
 
+    def _get_components_data(self, data):
+        components = self._get_dict_value(data, "Components", "components", default={})
+        if isinstance(components, dict):
+            return components
+        return {}
+
     def _get_custom_armor_data(self, pack):
         custom_armor = self._get_dict_value(pack, "CustomArmor", "custom_armor", "customArmor", default={})
         if isinstance(custom_armor, dict):
@@ -215,6 +221,59 @@ class NexoConverter(BaseConverter):
                     return layer1, layer2 if self._texture_exists(layer2) else None
         return None, None
 
+    def _normalize_slot(self, slot_value):
+        if not slot_value:
+            return None
+        slot = str(slot_value).strip().lower()
+        slot_map = {
+            "head": "head",
+            "helmet": "head",
+            "chest": "chest",
+            "chestplate": "chest",
+            "legs": "legs",
+            "leggings": "legs",
+            "feet": "feet",
+            "boots": "feet"
+        }
+        return slot_map.get(slot, slot if slot else None)
+
+    def _to_bool(self, value, default=False):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        return bool(value)
+
+    def _extract_non_armor_equippable_slot(self, data, mechanics=None):
+        components = self._get_components_data(data)
+        equippable = self._get_dict_value(components, "equippable", "Equippable", default={})
+        if isinstance(equippable, dict):
+            explicit_slot = self._normalize_slot(self._get_dict_value(equippable, "slot", "Slot", default=None))
+            if explicit_slot:
+                return explicit_slot
+        if mechanics is None:
+            mechanics = self._get_mechanics_data(data)
+        hat_cfg = self._get_dict_value(mechanics, "hat", "Hat", default={})
+        if isinstance(hat_cfg, dict):
+            enabled = self._to_bool(self._get_dict_value(hat_cfg, "enabled", "enable", default=True), default=True)
+            if enabled:
+                return "head"
+        return None
+
+    def _apply_non_armor_equippable(self, ce_item, data, mechanics=None):
+        slot = self._extract_non_armor_equippable_slot(data, mechanics=mechanics)
+        if not slot:
+            return
+        ce_data = ce_item.setdefault("data", {})
+        equippable_data = ce_data.get("equippable")
+        if not isinstance(equippable_data, dict):
+            equippable_data = {}
+        if not equippable_data.get("slot"):
+            equippable_data["slot"] = slot
+        ce_data["equippable"] = equippable_data
+
     def _convert_items(self, items_data):
         if not isinstance(items_data, dict):
             return
@@ -270,6 +329,9 @@ class NexoConverter(BaseConverter):
             self._handle_complex_item(ce_item, key, data, material)
         else:
             self._handle_generic_model(ce_item, pack)
+
+        if not self._is_armor(material):
+            self._apply_non_armor_equippable(ce_item, data, mechanics=mechanics)
 
         self.ce_config["items"][ce_id] = ce_item
 

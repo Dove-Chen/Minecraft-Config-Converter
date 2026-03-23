@@ -272,14 +272,14 @@ class NexoMigrator(BaseMigrator):
 
         path_clean = self._strip_namespace_prefix(path)
         if not path_clean.startswith("item/") and not path_clean.startswith("block/"):
-            return f"item/{path_clean}"
-        return path_clean
+            return self._to_posix(f"item/{path_clean}")
+        return self._to_posix(path_clean)
 
     def _adjust_model_path(self, path):
         path_clean = self._strip_namespace_prefix(path)
         if not path_clean.startswith("item/") and not path_clean.startswith("block/"):
-            return f"item/{path_clean}"
-        return path_clean
+            return self._to_posix(f"item/{path_clean}")
+        return self._to_posix(path_clean)
 
     def _strip_namespace_prefix(self, path):
         path_norm = str(path).replace("\\", "/").lstrip("/")
@@ -304,7 +304,10 @@ class NexoMigrator(BaseMigrator):
         if key in self.armor_humanoid_keys or key in self.armor_leggings_keys:
             return False
         base = os.path.splitext(name.lower())[0]
+        has_armor_context = any(token in rel_l for token in ("armor", "armour", "icon", "icons"))
         if base in {"helmet", "chestplate", "leggings", "boots"}:
+            if not has_armor_context:
+                return False
             return True
         if base.endswith(("_helmet", "_chestplate", "_leggings", "_boots")):
             return True
@@ -356,8 +359,8 @@ class NexoMigrator(BaseMigrator):
             path = os.path.join("item", "armor", base)
         if include_ext:
             ext = os.path.splitext(name)[1]
-            return f"{path}{ext}"
-        return path
+            return self._to_posix(f"{path}{ext}")
+        return self._to_posix(path)
 
     def _armor_texture_dest_rel(self, rel_path, name, include_ext=False):
         target_folder = "humanoid_leggings" if self._is_leggings_texture(name, rel_path) else "humanoid"
@@ -365,8 +368,11 @@ class NexoMigrator(BaseMigrator):
         path = os.path.join("entity", "equipment", target_folder, base)
         if include_ext:
             ext = os.path.splitext(name)[1]
-            return f"{path}{ext}"
-        return path
+            return self._to_posix(f"{path}{ext}")
+        return self._to_posix(path)
+
+    def _to_posix(self, path):
+        return str(path).replace("\\", "/")
 
     def _inject_namespace_path(self, path, ns):
         path_norm = path.replace("\\", "/").lstrip("/")
