@@ -42,6 +42,10 @@ class PackageAnalyzer:
                 if "Nexo" not in self.report["formats"]:
                     self.report["formats"].append("Nexo")
 
+            if current_dir_name == "oraxen" or "oraxen" in dirs:
+                if "Oraxen" not in self.report["formats"]:
+                    self.report["formats"].append("Oraxen")
+
             # 检查资源文件
             if "textures" in dirs or "textures" in root:
                 self.report["content_types"].add("贴图")
@@ -76,6 +80,7 @@ class PackageAnalyzer:
             is_ia = self._is_ia_config(data)
             is_ce = self._is_ce_config(data)
             is_nexo = self._is_nexo_config(data)
+            is_oraxen = self._is_oraxen_config(data)
 
             if is_ia:
                 if "ItemsAdder" not in self.report["formats"]:
@@ -102,6 +107,14 @@ class PackageAnalyzer:
             if is_nexo:
                     if "Nexo" not in self.report["formats"]:
                         self.report["formats"].append("Nexo")
+
+            if is_oraxen:
+                    if "Oraxen" not in self.report["formats"]:
+                        self.report["formats"].append("Oraxen")
+                    if "items" not in data and self._looks_like_oraxen_items_file(data):
+                        self.report["completeness"]["items_config"] = True
+                        self.report["content_types"].add("装备")
+                        self.report["details"]["item_count"] += len(data)
                 
         except Exception:
             pass # 忽略无法解析的文件
@@ -152,4 +165,33 @@ class PackageAnalyzer:
                      if "itemname" in value:
                          return True
                          
+        return False
+
+    def _is_oraxen_config(self, data):
+        if not isinstance(data, dict):
+            return False
+        if "oraxen_inventory" in data or "glyphs" in data:
+            return True
+        for value in data.values():
+            if not isinstance(value, dict):
+                continue
+            if "Pack" in value and "displayname" in value:
+                return True
+        return False
+
+    def _looks_like_oraxen_items_file(self, data):
+        if not isinstance(data, dict):
+            return False
+        score = 0
+        for value in data.values():
+            if not isinstance(value, dict):
+                continue
+            if "Pack" in value:
+                score += 1
+            if "displayname" in value:
+                score += 1
+            if "material" in value:
+                score += 1
+            if score >= 3:
+                return True
         return False

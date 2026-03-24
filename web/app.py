@@ -14,6 +14,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.converters.ia_to_ce import IAConverter
 from src.converters.nexo_to_ce import NexoConverter
+from src.converters.oraxen_to_ia import OraxenToIAConverter
 from src.analyzer import PackageAnalyzer
 from src.utils.yaml_loader import safe_load_yaml
 
@@ -92,6 +93,12 @@ def analyze():
                     warnings.append("检测到包中已包含 CraftEngine 配置。转换可能会覆盖或产生冲突。")
                 if "CraftEngine" not in available_targets:
                     available_targets.append("CraftEngine")
+
+            if "Oraxen" in detected_formats:
+                if "ItemsAdder" in detected_formats:
+                    warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
+                if "ItemsAdder" not in available_targets:
+                    available_targets.append("ItemsAdder")
                 
             if "CraftEngine" in detected_formats:
                  # 未来支持 CE -> IA
@@ -164,6 +171,11 @@ def convert():
             else:
                 # 默认为 ItemsAdder 或显式指定
                 return _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
+
+        if target_format == "ItemsAdder":
+            if source_format == "Oraxen":
+                return _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
+            return jsonify({'error': '目前仅支持 Oraxen -> ItemsAdder'}), 400
         
         return jsonify({'error': f'不支持的目标格式: {target_format}'}), 400
 
@@ -278,6 +290,87 @@ def _resolve_nexo_namespace(nexo_data, fallback_namespace, nexo_resourcepack_pat
     if data_ns:
         return data_ns
     pack_ns = _infer_nexo_namespace_from_pack(nexo_resourcepack_path)
+    if pack_ns:
+        return pack_ns
+    return fallback_namespace
+
+
+def _extract_oraxen_namespace_from_value(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = value.strip()
+    if ":" in path:
+        path = path.split(":", 1)[1]
+    path = path.replace("\\", "/").lstrip("/")
+    if not path:
+        return None
+    first = path.split("/", 1)[0].strip().lower()
+    if re.match(r'^[0-9a-z_.-]+$', first):
+        return first
+    return None
+
+
+def _infer_oraxen_namespace_from_data(oraxen_data):
+    if not isinstance(oraxen_data, dict):
+        return None
+    scores = {}
+    for value in oraxen_data.values():
+        if not isinstance(value, dict):
+            continue
+        pack = value.get("Pack", {})
+        if not isinstance(pack, dict):
+            continue
+        model_ns = _extract_oraxen_namespace_from_value(pack.get("model"))
+        if model_ns:
+            scores[model_ns] = scores.get(model_ns, 0) + 3
+        textures = pack.get("textures")
+        if isinstance(textures, list):
+            for texture in textures:
+                texture_ns = _extract_oraxen_namespace_from_value(texture)
+                if texture_ns:
+                    scores[texture_ns] = scores.get(texture_ns, 0) + 2
+        for key in ("cast_model", "blocking_model", "charged_model", "firework_model"):
+            ns = _extract_oraxen_namespace_from_value(pack.get(key))
+            if ns:
+                scores[ns] = scores.get(ns, 0) + 1
+    if not scores:
+        return None
+    return max(scores.items(), key=lambda x: x[1])[0]
+
+
+def _infer_oraxen_namespace_from_pack(oraxen_pack_path):
+    if not oraxen_pack_path:
+        return None
+    candidates = [
+        os.path.join(oraxen_pack_path, "models"),
+        os.path.join(oraxen_pack_path, "textures"),
+        os.path.join(oraxen_pack_path, "assets")
+    ]
+    scores = {}
+    for root in candidates:
+        if not os.path.isdir(root):
+            continue
+        for ns in os.listdir(root):
+            ns_path = os.path.join(root, ns)
+            if not os.path.isdir(ns_path):
+                continue
+            if not re.match(r'^[0-9a-z_.-]+$', ns):
+                continue
+            file_count = 0
+            for _, _, files in os.walk(ns_path):
+                file_count += len(files)
+            if file_count > 0:
+                scores[ns] = scores.get(ns, 0) + file_count
+    if not scores:
+        return None
+    return max(scores.items(), key=lambda x: x[1])[0]
+
+
+def _resolve_oraxen_namespace(oraxen_data, fallback_namespace, oraxen_pack_path):
+    data_ns = _infer_oraxen_namespace_from_data(oraxen_data)
+    if data_ns:
+        return data_ns
+    pack_ns = _infer_oraxen_namespace_from_pack(oraxen_pack_path)
     if pack_ns:
         return pack_ns
     return fallback_namespace
@@ -562,7 +655,74 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format)
 
-def _package_and_respond(session_output_dir, session_upload_dir, target_format):
+
+def _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
+    oraxen_item_configs = []
+    oraxen_pack_path = None
+
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for d in dirs:
+            if d.lower() == "oraxen":
+                scan_root = os.path.join(root, d)
+                break
+        if scan_root != extract_dir:
+            break
+
+    for root, dirs, files in os.walk(scan_root):
+        if "pack" in dirs and oraxen_pack_path is None:
+            oraxen_pack_path = os.path.join(root, "pack")
+        elif "assets" in dirs and oraxen_pack_path is None:
+            oraxen_pack_path = root
+
+        for f in files:
+            if not f.endswith((".yml", ".yaml")):
+                continue
+            full_path = os.path.join(root, f)
+            if "settings" in f.lower():
+                continue
+            data = safe_load_yaml(full_path)
+            if not isinstance(data, dict):
+                continue
+            sample = next(iter(data.values()), None)
+            if isinstance(sample, dict) and ("Pack" in sample or "displayname" in sample):
+                oraxen_item_configs.append(full_path)
+
+    if not oraxen_item_configs:
+        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+
+    merged_data = {}
+    for config_path in oraxen_item_configs:
+        data = safe_load_yaml(config_path)
+        if isinstance(data, dict):
+            merged_data.update(data)
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
+            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        namespace = user_namespace
+    else:
+        fallback_namespace = "converted"
+        first_file = os.path.basename(oraxen_item_configs[0])
+        if first_file:
+            fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(first_file)[0].lower())
+        namespace = _resolve_oraxen_namespace(merged_data, fallback_namespace, oraxen_pack_path)
+
+    converter = OraxenToIAConverter()
+    ia_output_base = os.path.join(session_output_dir, "ItemsAdder", "contents", namespace)
+    ia_config_dir = os.path.join(ia_output_base, "configs")
+    ia_res_dir = os.path.join(ia_output_base, "resourcepack")
+
+    if oraxen_pack_path:
+        converter.set_resource_paths(oraxen_pack_path, ia_res_dir)
+
+    converter.convert(merged_data, namespace=namespace)
+    converter.save_config(ia_config_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="ItemsAdder")
+
+def _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="CraftEngine"):
     # 5. 压缩结果
     # 获取原始文件名 
     original_filename = "converted"
@@ -581,7 +741,7 @@ def _package_and_respond(session_output_dir, session_upload_dir, target_format):
     output_zip_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
     # 我们希望压缩包解压后直接是 resources 文件夹，或者 CraftEngine 文件夹
 
-    shutil.make_archive(output_zip_path[:-4], 'zip', session_output_dir, "CraftEngine")
+    shutil.make_archive(output_zip_path[:-4], 'zip', session_output_dir, root_dir_name)
 
     # 清理会话文件 
     # shutil.rmtree(session_upload_dir)
