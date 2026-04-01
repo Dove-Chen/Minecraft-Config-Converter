@@ -200,13 +200,7 @@ class IAConverter(BaseConverter):
         if path.startswith("textures/"):
             path = path[len("textures/"):]
         parts = [p for p in path.split("/") if p]
-        excluded = {"textures", "entity", "equipment", "humanoid", "humanoid_legging", "humanoid_leggings", "armor", "armour"}
-        if not parts:
-            subpath = "unknown"
-        else:
-            basename = parts[-1]
-            prefix = [p for p in parts[:-1] if p.lower() not in excluded]
-            subpath = "/".join(prefix + [basename]) if basename else "/".join(prefix)
+        subpath = parts[-1] if parts else "unknown"
         target_folder = "humanoid_legging" if is_leggings else "humanoid"
         final_path = f"entity/equipment/{target_folder}/{subpath}" if subpath else f"entity/equipment/{target_folder}"
         return f"{self.namespace}:{final_path}"
@@ -974,6 +968,82 @@ class IAConverter(BaseConverter):
         base_clean = base_path[:-5] if base_path.endswith(".json") else base_path
         return f"{base_clean}{variants[0]}"
 
+    def _normalize_model_path_input(self, raw_path):
+        if not raw_path:
+            return ""
+        path = str(raw_path).replace("\\", "/").strip()
+        if ":" in path:
+            path = path.split(":", 1)[1]
+        if path.endswith(".json") or path.endswith(".png"):
+            path = path.rsplit(".", 1)[0]
+        if path.startswith("textures/"):
+            path = path[len("textures/"):]
+        return path.lstrip("/")
+
+    def _find_existing_model_by_name(self, texture_path):
+        if not self.ia_resourcepack_root or not texture_path:
+            return ""
+        texture_parts = [p for p in texture_path.split("/") if p]
+        texture_name = texture_parts[-1] if texture_parts else ""
+        if not texture_name:
+            return ""
+        candidate_roots = [
+            os.path.join(self.ia_resourcepack_root, "assets", self.namespace, "models"),
+            os.path.join(self.ia_resourcepack_root, self.namespace, "models"),
+            os.path.join(self.ia_resourcepack_root, "models")
+        ]
+        for models_root in candidate_roots:
+            if not os.path.exists(models_root):
+                continue
+            direct_candidates = []
+            direct_candidates.append(texture_path)
+            if texture_path.startswith("item/"):
+                direct_candidates.append(texture_path[len("item/"):])
+            if "/gear/" in texture_path:
+                direct_candidates.append(texture_path.replace("/gear/", "/"))
+                if texture_path.startswith("item/"):
+                    direct_candidates.append(texture_path[len("item/"):].replace("/gear/", "/"))
+            unique_direct_candidates = []
+            for candidate in direct_candidates:
+                if candidate and candidate not in unique_direct_candidates:
+                    unique_direct_candidates.append(candidate)
+            for candidate in unique_direct_candidates:
+                if os.path.exists(os.path.join(models_root, f"{candidate}.json")):
+                    return candidate
+            matches = []
+            target_file_name = f"{texture_name}.json"
+            for root, _, files in os.walk(models_root):
+                if target_file_name in files:
+                    rel_model = os.path.relpath(os.path.join(root, target_file_name), models_root)
+                    matches.append(rel_model.replace("\\", "/")[:-5])
+            if matches:
+                texture_tokens = set(texture_parts[:-1])
+                scored = []
+                for model_path in matches:
+                    model_tokens = set([p for p in model_path.split("/")[:-1] if p])
+                    overlap = len(texture_tokens.intersection(model_tokens))
+                    scored.append((overlap, -len(model_path), model_path))
+                scored.sort(reverse=True)
+                return scored[0][2]
+        return ""
+
+    def _resolve_complex_base_model_path(self, key, resource, textures):
+        model_path = self._normalize_model_path_input(resource.get("model_path", ""))
+        if model_path:
+            return model_path
+        normalized_textures = []
+        for texture in textures or []:
+            normalized = self._normalize_model_path_input(texture)
+            if normalized:
+                normalized_textures.append(normalized)
+        for texture_path in normalized_textures:
+            found_path = self._find_existing_model_by_name(texture_path)
+            if found_path:
+                return found_path
+        if normalized_textures:
+            return normalized_textures[0]
+        return key
+
     def _handle_complex_item(self, ce_item, key, ia_data, material):
         # 为此物品创建一个模板
         template_id = f"models:{self.namespace}_{key}_model"
@@ -983,7 +1053,6 @@ class IAConverter(BaseConverter):
         args = {}
         
         resource = ia_data.get("resource", {})
-        base_model_path = resource.get("model_path", "")
         textures = resource.get("textures")
         if not textures and resource.get("texture"):
             val = resource.get("texture")
@@ -991,6 +1060,7 @@ class IAConverter(BaseConverter):
                 textures = val
             else:
                 textures = [val]
+        base_model_path = self._resolve_complex_base_model_path(key, resource, textures)
         
         if material in ["BOW", "CROSSBOW"] and textures:
             expanded_textures = self._expand_bow_textures(textures)
