@@ -266,28 +266,35 @@ def _infer_nexo_namespace_from_data(nexo_data):
     return max(scores.items(), key=lambda x: x[1])[0]
 
 def _infer_nexo_namespace_from_pack(nexo_resourcepack_path):
-    if not nexo_resourcepack_path:
-        return None
-    assets_root = os.path.join(nexo_resourcepack_path, "assets")
     scores = {}
-    candidate_roots = [
-        os.path.join(assets_root, "minecraft", "models"),
-        os.path.join(assets_root, "minecraft", "textures")
-    ]
-    for root in candidate_roots:
-        if not os.path.isdir(root):
-            continue
-        for ns in os.listdir(root):
-            ns_path = os.path.join(root, ns)
-            if not os.path.isdir(ns_path):
+    pack_paths = []
+    if isinstance(nexo_resourcepack_path, (list, tuple)):
+        for path in nexo_resourcepack_path:
+            if isinstance(path, str) and path.strip():
+                pack_paths.append(path)
+    elif isinstance(nexo_resourcepack_path, str) and nexo_resourcepack_path.strip():
+        pack_paths.append(nexo_resourcepack_path)
+
+    for pack_path in pack_paths:
+        assets_root = os.path.join(pack_path, "assets")
+        candidate_roots = [
+            os.path.join(assets_root, "minecraft", "models"),
+            os.path.join(assets_root, "minecraft", "textures")
+        ]
+        for root in candidate_roots:
+            if not os.path.isdir(root):
                 continue
-            if not re.match(r'^[0-9a-z_.-]+$', ns):
-                continue
-            file_count = 0
-            for _, _, files in os.walk(ns_path):
-                file_count += len(files)
-            if file_count > 0:
-                scores[ns] = scores.get(ns, 0) + file_count
+            for ns in os.listdir(root):
+                ns_path = os.path.join(root, ns)
+                if not os.path.isdir(ns_path):
+                    continue
+                if not re.match(r'^[0-9a-z_.-]+$', ns):
+                    continue
+                file_count = 0
+                for _, _, files in os.walk(ns_path):
+                    file_count += len(files)
+                if file_count > 0:
+                    scores[ns] = scores.get(ns, 0) + file_count
     if not scores:
         return None
     return max(scores.items(), key=lambda x: x[1])[0]
@@ -300,6 +307,95 @@ def _resolve_nexo_namespace(nexo_data, fallback_namespace, nexo_resourcepack_pat
     if pack_ns:
         return pack_ns
     return fallback_namespace
+
+def _is_safe_member_path(base_dir, member_name):
+    # 防止 zip 路径穿越，确保条目解压后仍位于目标目录
+    normalized_member = os.path.normpath(member_name.replace("\\", "/"))
+    target_path = os.path.normpath(os.path.join(base_dir, normalized_member))
+    try:
+        return os.path.commonpath([os.path.normpath(base_dir), target_path]) == os.path.normpath(base_dir)
+    except ValueError:
+        return False
+
+def _safe_extract_zip(zip_file_path, destination_dir):
+    with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
+        for member in zip_ref.infolist():
+            name = member.filename
+            if not name:
+                continue
+            if not _is_safe_member_path(destination_dir, name):
+                raise ValueError(f"检测到不安全的压缩条目: {name}")
+            zip_ref.extract(member, destination_dir)
+
+def _find_resourcepack_root(search_dir):
+    # 优先返回包含 assets 的目录，其次返回包含 models/textures 的目录
+    if not os.path.isdir(search_dir):
+        return None
+    if os.path.isdir(os.path.join(search_dir, "assets")):
+        return search_dir
+    if os.path.isdir(os.path.join(search_dir, "models")) or os.path.isdir(os.path.join(search_dir, "textures")):
+        return search_dir
+
+    for root, dirs, _ in os.walk(search_dir):
+        if "assets" in dirs:
+            return root
+        if "models" in dirs or "textures" in dirs:
+            return root
+    return None
+
+def _collect_nexo_resourcepack_paths(base_pack_dir, temp_extract_root):
+    paths = []
+    if not isinstance(base_pack_dir, str) or not os.path.isdir(base_pack_dir):
+        return paths
+
+    base_norm = os.path.normpath(base_pack_dir)
+    paths.append(base_norm)
+
+    external_dir = None
+    for entry in os.listdir(base_pack_dir):
+        entry_path = os.path.join(base_pack_dir, entry)
+        if os.path.isdir(entry_path) and entry.lower() == "external_packs":
+            external_dir = entry_path
+            break
+    if not external_dir:
+        return paths
+
+    os.makedirs(temp_extract_root, exist_ok=True)
+    zip_files = [f for f in os.listdir(external_dir) if f.lower().endswith(".zip")]
+    zip_files.sort(key=lambda x: x.lower())
+
+    for index, zip_name in enumerate(zip_files):
+        source_zip = os.path.join(external_dir, zip_name)
+        extract_dir = os.path.join(temp_extract_root, f"{index:03d}_{os.path.splitext(zip_name)[0]}")
+        os.makedirs(extract_dir, exist_ok=True)
+        _safe_extract_zip(source_zip, extract_dir)
+
+        pack_root = _find_resourcepack_root(extract_dir)
+        if pack_root:
+            normalized = os.path.normpath(pack_root)
+            if normalized not in paths:
+                paths.append(normalized)
+
+    return paths
+
+def _merge_nexo_resourcepacks(resourcepack_paths, merged_root):
+    # 将多个资源包目录按顺序叠加到同一目录，后者覆盖前者
+    if not isinstance(resourcepack_paths, (list, tuple)) or not resourcepack_paths:
+        return None
+    os.makedirs(merged_root, exist_ok=True)
+
+    for root in resourcepack_paths:
+        if not isinstance(root, str) or not os.path.isdir(root):
+            continue
+        for current_root, _, files in os.walk(root):
+            rel_dir = os.path.relpath(current_root, root)
+            target_dir = merged_root if rel_dir == "." else os.path.join(merged_root, rel_dir)
+            os.makedirs(target_dir, exist_ok=True)
+            for file_name in files:
+                src_file = os.path.join(current_root, file_name)
+                dst_file = os.path.join(target_dir, file_name)
+                shutil.copy2(src_file, dst_file)
+    return merged_root
 
 
 def _extract_oraxen_namespace_from_value(value):
@@ -386,6 +482,8 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
     # 1. 扫描 Nexo 配置和资源
     nexo_items_configs = []
     nexo_resourcepack_path = None
+    nexo_resourcepack_paths = []
+    merged_nexo_resourcepack_path = None
     
     # 尝试找到 Nexo 根目录
     scan_root = extract_dir
@@ -399,11 +497,13 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
 
     # 扫描配置和资源
     for root, dirs, files in os.walk(scan_root):
-        # 资源包检测
-        if "pack" in dirs and nexo_resourcepack_path is None:
-             nexo_resourcepack_path = os.path.join(root, "pack")
-        elif "assets" in dirs and nexo_resourcepack_path is None:
-             nexo_resourcepack_path = root
+        # 资源包检测（大小写无关）
+        if nexo_resourcepack_path is None:
+            dir_lookup = {d.lower(): d for d in dirs}
+            if "pack" in dir_lookup:
+                nexo_resourcepack_path = os.path.join(root, dir_lookup["pack"])
+            elif "assets" in dir_lookup:
+                nexo_resourcepack_path = root
              
         # 配置文件检测
         for f in files:
@@ -415,6 +515,16 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
 
     if not nexo_items_configs:
          return jsonify({'error': '未能找到 Nexo 配置文件'}), 400
+
+    if nexo_resourcepack_path:
+        external_extract_root = os.path.join(session_upload_dir, "_nexo_external_packs_ce")
+        merged_pack_root = os.path.join(session_upload_dir, "_nexo_merged_pack_ce")
+        if os.path.isdir(external_extract_root):
+            shutil.rmtree(external_extract_root, ignore_errors=True)
+        if os.path.isdir(merged_pack_root):
+            shutil.rmtree(merged_pack_root, ignore_errors=True)
+        nexo_resourcepack_paths = _collect_nexo_resourcepack_paths(nexo_resourcepack_path, external_extract_root)
+        merged_nexo_resourcepack_path = _merge_nexo_resourcepacks(nexo_resourcepack_paths, merged_pack_root)
 
     # 2. 运行转换
     # 准备命名空间
@@ -434,8 +544,8 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
         ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
         ce_res_dir = os.path.join(ce_output_base, "resourcepack")
 
-        if nexo_resourcepack_path:
-            converter.set_resource_paths(nexo_resourcepack_path, ce_res_dir)
+        if merged_nexo_resourcepack_path:
+            converter.set_resource_paths(merged_nexo_resourcepack_path, ce_res_dir)
 
         converter.convert(merged_data, namespace=namespace)
         converter.save_config(ce_config_dir)
@@ -450,7 +560,11 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
             filename = os.path.basename(config_path)
             fallback_namespace = os.path.splitext(filename)[0]
             fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', fallback_namespace.lower())
-            namespace = _resolve_nexo_namespace(data, fallback_namespace, nexo_resourcepack_path)
+            namespace = _resolve_nexo_namespace(
+                data,
+                fallback_namespace,
+                nexo_resourcepack_paths if nexo_resourcepack_paths else nexo_resourcepack_path
+            )
             if namespace not in grouped_data:
                 grouped_data[namespace] = {}
             grouped_data[namespace].update(data)
@@ -461,8 +575,8 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
             ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
             ce_res_dir = os.path.join(ce_output_base, "resourcepack")
 
-            if nexo_resourcepack_path:
-                converter.set_resource_paths(nexo_resourcepack_path, ce_res_dir)
+            if merged_nexo_resourcepack_path:
+                converter.set_resource_paths(merged_nexo_resourcepack_path, ce_res_dir)
             
             converter.convert(merged_data, namespace=namespace)
             converter.save_config(ce_config_dir)
@@ -733,6 +847,7 @@ def _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, t
 def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
     nexo_items_configs = []
     nexo_resourcepack_path = None
+    nexo_resourcepack_paths = []
 
     scan_root = extract_dir
     for root, dirs, _ in os.walk(extract_dir):
@@ -744,10 +859,12 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
             break
 
     for root, dirs, files in os.walk(scan_root):
-        if "pack" in dirs and nexo_resourcepack_path is None:
-            nexo_resourcepack_path = os.path.join(root, "pack")
-        elif "assets" in dirs and nexo_resourcepack_path is None:
-            nexo_resourcepack_path = root
+        if nexo_resourcepack_path is None:
+            dir_lookup = {d.lower(): d for d in dirs}
+            if "pack" in dir_lookup:
+                nexo_resourcepack_path = os.path.join(root, dir_lookup["pack"])
+            elif "assets" in dir_lookup:
+                nexo_resourcepack_path = root
 
         for f in files:
             if not f.endswith((".yml", ".yaml")):
@@ -769,6 +886,13 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
     if not nexo_items_configs:
         return jsonify({'error': '未能找到 Nexo 物品配置文件'}), 400
 
+    if nexo_resourcepack_path:
+        # external_packs 会先解包到临时目录，再按顺序参与资源迁移
+        external_extract_root = os.path.join(session_upload_dir, "_nexo_external_packs")
+        if os.path.isdir(external_extract_root):
+            shutil.rmtree(external_extract_root, ignore_errors=True)
+        nexo_resourcepack_paths = _collect_nexo_resourcepack_paths(nexo_resourcepack_path, external_extract_root)
+
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
@@ -789,7 +913,11 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
             file_name = os.path.basename(config_path)
             if file_name:
                 fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(file_name)[0].lower())
-            namespace = _resolve_nexo_namespace(data, fallback_namespace, nexo_resourcepack_path)
+            namespace = _resolve_nexo_namespace(
+                data,
+                fallback_namespace,
+                nexo_resourcepack_paths if nexo_resourcepack_paths else nexo_resourcepack_path
+            )
             if namespace not in namespace_map:
                 namespace_map[namespace] = {}
             namespace_map[namespace].update(data)
@@ -801,7 +929,11 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
         ia_res_dir = os.path.join(ia_output_base, "resourcepack")
 
         if nexo_resourcepack_path:
-            converter.set_resource_paths(nexo_resourcepack_path, ia_res_dir)
+            converter.set_resource_paths(
+                nexo_resourcepack_path,
+                ia_res_dir,
+                additional_nexo_roots=nexo_resourcepack_paths[1:] if nexo_resourcepack_paths else None
+            )
 
         converter.convert(merged_data, namespace=namespace)
         converter.save_config(ia_config_dir)

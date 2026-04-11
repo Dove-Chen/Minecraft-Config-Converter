@@ -14,11 +14,22 @@ class NexoToIAConverter(BaseConverter):
             "equipments": {}
         }
         self.nexo_resourcepack_root = None
+        self.nexo_resourcepack_roots = []
         self.ia_resourcepack_root = None
         self._armor_candidates = []
 
-    def set_resource_paths(self, nexo_root, ia_root):
+    def set_resource_paths(self, nexo_root, ia_root, additional_nexo_roots=None):
         self.nexo_resourcepack_root = nexo_root
+        self.nexo_resourcepack_roots = []
+        if isinstance(nexo_root, str) and nexo_root.strip():
+            self.nexo_resourcepack_roots.append(os.path.normpath(nexo_root))
+        # 兼容 external_packs 等额外资源根
+        if isinstance(additional_nexo_roots, (list, tuple)):
+            for path in additional_nexo_roots:
+                if isinstance(path, str) and path.strip():
+                    normalized = os.path.normpath(path)
+                    if normalized not in self.nexo_resourcepack_roots:
+                        self.nexo_resourcepack_roots.append(normalized)
         self.ia_resourcepack_root = ia_root
 
     def convert(self, nexo_data, namespace=None):
@@ -75,7 +86,7 @@ class NexoToIAConverter(BaseConverter):
 
         if self.nexo_resourcepack_root and self.ia_resourcepack_root:
             migrator = NexoToIAMigrator(
-                self.nexo_resourcepack_root,
+                self.nexo_resourcepack_roots or self.nexo_resourcepack_root,
                 self.ia_resourcepack_root,
                 self.namespace
             )
@@ -343,18 +354,19 @@ class NexoToIAConverter(BaseConverter):
 
     def _collect_texture_roots(self):
         roots = []
-        base = self.nexo_resourcepack_root
-        candidates = [
-            os.path.join(base, "assets", "minecraft", "textures"),
-            os.path.join(base, "assets", self.namespace, "textures"),
-            os.path.join(base, "textures", self.namespace),
-            os.path.join(base, "textures")
-        ]
-        for path in candidates:
-            if os.path.isdir(path):
-                normalized = os.path.normpath(path)
-                if normalized not in roots:
-                    roots.append(normalized)
+        base_roots = self.nexo_resourcepack_roots or ([self.nexo_resourcepack_root] if self.nexo_resourcepack_root else [])
+        for base in base_roots:
+            candidates = [
+                os.path.join(base, "assets", "minecraft", "textures"),
+                os.path.join(base, "assets", self.namespace, "textures"),
+                os.path.join(base, "textures", self.namespace),
+                os.path.join(base, "textures")
+            ]
+            for path in candidates:
+                if os.path.isdir(path):
+                    normalized = os.path.normpath(path)
+                    if normalized not in roots:
+                        roots.append(normalized)
         return roots
 
     def _infer_armor_slot(self, data, material):

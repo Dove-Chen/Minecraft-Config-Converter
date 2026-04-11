@@ -8,25 +8,34 @@ class NexoToIAMigrator(BaseMigrator):
     def __init__(self, nexo_resourcepack_path, ia_resourcepack_path, namespace):
         super().__init__(nexo_resourcepack_path, ia_resourcepack_path)
         self.namespace = namespace
+        # 支持单路径与多路径输入，便于处理 external_packs 解包目录
+        if isinstance(nexo_resourcepack_path, (list, tuple)):
+            self.input_paths = [os.path.normpath(p) for p in nexo_resourcepack_path if isinstance(p, str) and p.strip()]
+        elif isinstance(nexo_resourcepack_path, str) and nexo_resourcepack_path.strip():
+            self.input_paths = [os.path.normpath(nexo_resourcepack_path)]
+        else:
+            self.input_paths = []
 
     def migrate(self):
-        models_sources = self._collect_resource_dirs("models")
-        textures_sources = self._collect_resource_dirs("textures")
+        # 按输入顺序迁移：后面的目录会覆盖前面的同名文件
+        for input_root in self.input_paths:
+            models_sources = self._collect_resource_dirs("models", input_root)
+            textures_sources = self._collect_resource_dirs("textures", input_root)
 
-        for src_dir in models_sources:
-            self._copy_tree(src_dir, os.path.join(self.output_path, "assets", self.namespace, "models"))
-        for src_dir in textures_sources:
-            self._copy_tree(src_dir, os.path.join(self.output_path, "assets", self.namespace, "textures"))
+            for src_dir in models_sources:
+                self._copy_tree(src_dir, os.path.join(self.output_path, "assets", self.namespace, "models"))
+            for src_dir in textures_sources:
+                self._copy_tree(src_dir, os.path.join(self.output_path, "assets", self.namespace, "textures"))
 
-    def _collect_resource_dirs(self, resource_type):
+    def _collect_resource_dirs(self, resource_type, input_root):
         dirs = []
         candidates = [
-            os.path.join(self.input_path, "assets", "minecraft", resource_type, self.namespace),
-            os.path.join(self.input_path, "assets", self.namespace, resource_type),
-            os.path.join(self.input_path, resource_type, self.namespace),
-            os.path.join(self.input_path, self.namespace, resource_type),
-            os.path.join(self.input_path, "assets", "minecraft", resource_type),
-            os.path.join(self.input_path, resource_type),
+            os.path.join(input_root, "assets", "minecraft", resource_type, self.namespace),
+            os.path.join(input_root, "assets", self.namespace, resource_type),
+            os.path.join(input_root, resource_type, self.namespace),
+            os.path.join(input_root, self.namespace, resource_type),
+            os.path.join(input_root, "assets", "minecraft", resource_type),
+            os.path.join(input_root, resource_type),
         ]
         for path in candidates:
             if not os.path.isdir(path):
