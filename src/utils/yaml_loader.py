@@ -1,5 +1,25 @@
 import yaml
 import os
+import re
+
+
+def _quote_bare_ampersand_values(content):
+    """
+    将形如 `key: &e` 的裸值改写为字符串 `key: "&e"`。
+    仅用于 YAML 解析失败时的兜底修复，避免把颜色代码误识别为锚点。
+    """
+    pattern = re.compile(
+        r"^(\s*[^#:\n][^:\n]*:\s*)(&[^\s#]+)(\s*(#.*)?)\r?$",
+        re.MULTILINE
+    )
+
+    def _replacer(match):
+        prefix = match.group(1)
+        value = match.group(2)
+        suffix = match.group(3) or ""
+        return f'{prefix}"{value}"{suffix}'
+
+    return pattern.sub(_replacer, content, count=0)
 
 def safe_load_yaml(file_path):
     """
@@ -34,6 +54,13 @@ def safe_load_yaml(file_path):
             except yaml.YAMLError:
                 # 如果 2 个空格不起作用，尝试 4 个空格
                 sanitized_content = content.replace('\t', '    ')
+                return yaml.safe_load(sanitized_content)
+        raise e
+    except yaml.YAMLError as e:
+        # 兼容处理：某些配置把颜色代码写成 `display_name: &e`，会被 YAML 当作锚点并触发 duplicate anchor
+        if "duplicate anchor" in str(e):
+            sanitized_content = _quote_bare_ampersand_values(content)
+            if sanitized_content != content:
                 return yaml.safe_load(sanitized_content)
         raise e
     except Exception as e:
