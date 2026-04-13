@@ -518,6 +518,23 @@ class IAConverter(BaseConverter):
     def _handle_armor(self, ce_item, ia_data):
         equipment_id = None
         slot = "head"
+        
+        # 统一槽位大小写，避免 FEET/Head 等写法导致后续逻辑失效
+        def _normalize_slot(raw_slot):
+            if raw_slot is None:
+                return None
+            slot_map = {
+                "head": "head",
+                "helmet": "head",
+                "chest": "chest",
+                "chestplate": "chest",
+                "legs": "legs",
+                "leggings": "legs",
+                "feet": "feet",
+                "boots": "feet"
+            }
+            key = str(raw_slot).strip().lower()
+            return slot_map.get(key, key)
 
         # 检查旧版 equipment
         if "equipment" in ia_data:
@@ -528,7 +545,7 @@ class IAConverter(BaseConverter):
             armor_props = ia_data["specific_properties"].get("armor", {})
             equipment_id = armor_props.get("custom_armor")
             if "slot" in armor_props:
-                slot = armor_props["slot"]
+                slot = _normalize_slot(armor_props["slot"]) or slot
 
         # 如果需要，从材质推断槽位 (尽管 specific_properties 通常会设置它)
         material = ce_item["material"]

@@ -105,8 +105,6 @@ class IAMigrator(BaseMigrator):
 
     def _is_armor_icon_texture(self, name, rel_path):
         rel_l = rel_path.replace("\\", "/").lower()
-        if rel_l.startswith("item/") or rel_l == "item":
-            return False
         key = self._normalize_texture_key_from_path(os.path.join(rel_path, name))
         if key in self.armor_humanoid_keys or key in self.armor_leggings_keys:
             return False
@@ -141,7 +139,7 @@ class IAMigrator(BaseMigrator):
     def _build_item_armor_dir(self, rel_path):
         rel_l = rel_path.replace("\\", "/")
         parts = [p for p in rel_l.split("/") if p and p != "."]
-        excluded = {"textures", "armor", "armour"}
+        excluded = {"textures", "item", "armor", "armour"}
         prefix = [p for p in parts if p.lower() not in excluded]
         if prefix:
             return os.path.join("item", "armor", *prefix)
@@ -171,7 +169,7 @@ class IAMigrator(BaseMigrator):
             return self._armor_key_to_dest_rel(key, is_leggings=True)
         if self._is_armor_icon_texture(path.split("/")[-1], path):
             parts = [p for p in path.split("/") if p]
-            excluded = {"textures", "armor", "armour"}
+            excluded = {"textures", "item", "armor", "armour"}
             basename = parts[-1] if parts else ""
             prefix = [p for p in parts[:-1] if p.lower() not in excluded]
             if basename:
