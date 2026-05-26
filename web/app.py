@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, send_file, jsonify
+from werkzeug.utils import secure_filename
 import os
 import shutil
 import zipfile
@@ -38,6 +39,38 @@ SUPPORTED_PLUGINS = [
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
+def _is_valid_session_id(value):
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+def _safe_join_under(base_dir, *parts):
+    base_path = os.path.abspath(base_dir)
+    target_path = os.path.abspath(os.path.join(base_path, *parts))
+    try:
+        if os.path.commonpath([base_path, target_path]) != base_path:
+            raise ValueError("检测到不安全的路径")
+    except ValueError:
+        raise ValueError("检测到不安全的路径")
+    return target_path
+
+def _sanitize_upload_filename(raw_filename):
+    filename = secure_filename(raw_filename or "")
+    if not filename:
+        filename = "upload.zip"
+    return filename
+
+def _save_uploaded_zip(file, session_upload_dir):
+    filename = _sanitize_upload_filename(file.filename)
+    if not filename.lower().endswith(".zip"):
+        raise ValueError("请上传 .zip 文件")
+    file_path = _safe_join_under(session_upload_dir, filename)
+    file.save(file_path)
+    return filename, file_path
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -57,16 +90,10 @@ def analyze():
         os.makedirs(session_upload_dir, exist_ok=True)
 
         try:
-            filename = file.filename
-            file_path = os.path.join(session_upload_dir, filename)
-            file.save(file_path)
+            filename, file_path = _save_uploaded_zip(file, session_upload_dir)
 
             extract_dir = os.path.join(session_upload_dir, "extracted")
-            if filename.endswith('.zip'):
-                with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-            else:
-                return jsonify({'error': '请上传 .zip 文件'}), 400
+            _safe_extract_zip(file_path, extract_dir)
 
             # 运行分析
             analyzer = PackageAnalyzer(extract_dir)
@@ -121,6 +148,8 @@ def analyze():
                 'session_id': session_id
             })
 
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
@@ -135,13 +164,15 @@ def convert():
     source_format = request.form.get('source_format') # 新增: 明确源格式
     
     if session_id:
+        if not _is_valid_session_id(session_id):
+            return jsonify({'error': '无效的会话 ID'}), 400
         # 使用已存在的会话
-        session_upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], session_id)
-        extract_dir = os.path.join(session_upload_dir, "extracted")
+        session_upload_dir = _safe_join_under(app.config['UPLOAD_FOLDER'], session_id)
+        extract_dir = _safe_join_under(session_upload_dir, "extracted")
         if not os.path.exists(extract_dir):
             return jsonify({'error': '会话已过期或不存在'}), 400
             
-        session_output_dir = os.path.join(app.config['OUTPUT_FOLDER'], session_id)
+        session_output_dir = _safe_join_under(app.config['OUTPUT_FOLDER'], session_id)
         os.makedirs(session_output_dir, exist_ok=True)
         
     elif 'file' in request.files:
@@ -151,21 +182,17 @@ def convert():
             return jsonify({'error': '未选择文件'}), 400
             
         session_id = str(uuid.uuid4())
-        session_upload_dir = os.path.join(app.config['UPLOAD_FOLDER'], session_id)
-        session_output_dir = os.path.join(app.config['OUTPUT_FOLDER'], session_id)
+        session_upload_dir = _safe_join_under(app.config['UPLOAD_FOLDER'], session_id)
+        session_output_dir = _safe_join_under(app.config['OUTPUT_FOLDER'], session_id)
         os.makedirs(session_upload_dir, exist_ok=True)
         os.makedirs(session_output_dir, exist_ok=True)
 
-        filename = file.filename
-        file_path = os.path.join(session_upload_dir, filename)
-        file.save(file_path)
-
-        extract_dir = os.path.join(session_upload_dir, "extracted")
-        if filename.endswith('.zip'):
-            with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-        else:
-            return jsonify({'error': '请上传 .zip 文件'}), 400
+        try:
+            filename, file_path = _save_uploaded_zip(file, session_upload_dir)
+            extract_dir = _safe_join_under(session_upload_dir, "extracted")
+            _safe_extract_zip(file_path, extract_dir)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
     else:
         return jsonify({'error': '无效的请求'}), 400
 
@@ -310,10 +337,11 @@ def _resolve_nexo_namespace(nexo_data, fallback_namespace, nexo_resourcepack_pat
 
 def _is_safe_member_path(base_dir, member_name):
     # 防止 zip 路径穿越，确保条目解压后仍位于目标目录
+    base_path = os.path.abspath(base_dir)
     normalized_member = os.path.normpath(member_name.replace("\\", "/"))
-    target_path = os.path.normpath(os.path.join(base_dir, normalized_member))
+    target_path = os.path.abspath(os.path.join(base_path, normalized_member))
     try:
-        return os.path.commonpath([os.path.normpath(base_dir), target_path]) == os.path.normpath(base_dir)
+        return os.path.commonpath([base_path, target_path]) == base_path
     except ValueError:
         return False
 
@@ -952,11 +980,12 @@ def _package_and_respond(session_output_dir, session_upload_dir, target_format, 
     except:
         pass
 
-    output_filename = f"{original_filename} [{target_format} by MCC].zip"
+    session_prefix = os.path.basename(os.path.normpath(session_upload_dir))
+    output_filename = f"{session_prefix}_{original_filename} [{target_format} by MCC].zip"
     # 简单的文件名清理，防止非法字符
-    output_filename = re.sub(r'[\\/*?:"<>|]', "", output_filename)
+    output_filename = secure_filename(re.sub(r'[\\/*?:"<>|]', "", output_filename))
     
-    output_zip_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+    output_zip_path = _safe_join_under(app.config['OUTPUT_FOLDER'], output_filename)
     # 我们希望压缩包解压后直接是 resources 文件夹，或者 CraftEngine 文件夹
 
     shutil.make_archive(output_zip_path[:-4], 'zip', session_output_dir, root_dir_name)
@@ -972,7 +1001,13 @@ def _package_and_respond(session_output_dir, session_upload_dir, target_format, 
 
 @app.route('/api/download/<filename>')
 def download_file(filename):
-    return send_file(os.path.join(app.config['OUTPUT_FOLDER'], filename), as_attachment=True)
+    safe_name = secure_filename(filename or "")
+    if not safe_name or safe_name != filename:
+        return jsonify({'error': '无效的文件名'}), 400
+    file_path = _safe_join_under(app.config['OUTPUT_FOLDER'], safe_name)
+    if not os.path.isfile(file_path):
+        return jsonify({'error': '文件不存在或已过期'}), 404
+    return send_file(file_path, as_attachment=True)
 
 import webbrowser
 from threading import Timer, Lock

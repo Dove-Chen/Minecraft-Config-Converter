@@ -279,17 +279,34 @@ class NexoConverter(BaseConverter):
             return
         
         # 递归函数查找物品
-        def recurse(data, prefix=""):
+        seen_item_keys = set()
+
+        def make_item_key(parts):
+            raw_key = "_".join(str(part) for part in parts if str(part).strip())
+            item_key = re.sub(r"[^0-9a-z_.-]", "_", raw_key.lower()).strip("_")
+            if not item_key:
+                item_key = "item"
+            original_key = item_key
+            index = 2
+            while item_key in seen_item_keys:
+                item_key = f"{original_key}_{index}"
+                index += 1
+            seen_item_keys.add(item_key)
+            return item_key
+
+        def recurse(data, prefix_parts=None):
+            if prefix_parts is None:
+                prefix_parts = []
             for key, value in data.items():
                 if not isinstance(value, dict):
                     continue
                 
                 # 检查是否为物品
                 if "material" in value or "itemname" in value or "customname" in value:
-                    self._convert_item(key, value)
+                    self._convert_item(make_item_key(prefix_parts + [key]), value)
                 else:
                     # 递归
-                    recurse(value, prefix + key + "_")
+                    recurse(value, prefix_parts + [key])
 
         recurse(items_data)
 
