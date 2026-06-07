@@ -5,21 +5,30 @@ import re
 
 def _quote_bare_ampersand_values(content):
     """
-    将形如 `key: &e` 的裸值改写为字符串 `key: "&e"`。
-    仅用于 YAML 解析失败时的兜底修复，避免把颜色代码误识别为锚点。
+    将形如 `key: &eName` 或 `- &7Lore` 的裸值改写为字符串。
+    Minecraft 配置常用 `&` 表示颜色，PyYAML 会把它误识别为 anchor。
     """
-    pattern = re.compile(
-        r"^(\s*[^#:\n][^:\n]*:\s*)(&[^\s#]+)(\s*(#.*)?)\r?$",
-        re.MULTILINE
-    )
+    patterns = [
+        re.compile(
+            r"^(\s*[^#:\n][^:\n]*:\s*)(&[0-9a-fA-Fk-oK-OrR][^\n#]*?)(\s*(#.*)?)\r?$",
+            re.MULTILINE
+        ),
+        re.compile(
+            r"^(\s*-\s*)(&[0-9a-fA-Fk-oK-OrR][^\n#]*?)(\s*(#.*)?)\r?$",
+            re.MULTILINE
+        )
+    ]
 
     def _replacer(match):
         prefix = match.group(1)
-        value = match.group(2)
+        value = match.group(2).rstrip()
         suffix = match.group(3) or ""
-        return f'{prefix}"{value}"{suffix}'
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'{prefix}"{escaped}"{suffix}'
 
-    return pattern.sub(_replacer, content, count=0)
+    for pattern in patterns:
+        content = pattern.sub(_replacer, content, count=0)
+    return content
 
 def safe_load_yaml(file_path):
     """
@@ -43,17 +52,18 @@ def safe_load_yaml(file_path):
                 with open(file_path, 'r', encoding='latin-1') as f:
                     content = f.read()
             
-        return yaml.safe_load(content)
+        sanitized_content = _quote_bare_ampersand_values(content)
+        return yaml.safe_load(sanitized_content)
     except yaml.scanner.ScannerError as e:
         # 检查错误是否可能是由制表符引起的
         if '\t' in content:
             # 尝试将制表符替换为 2 个空格 (常见约定)
-            sanitized_content = content.replace('\t', '  ')
+            sanitized_content = _quote_bare_ampersand_values(content.replace('\t', '  '))
             try:
                 return yaml.safe_load(sanitized_content)
             except yaml.YAMLError:
                 # 如果 2 个空格不起作用，尝试 4 个空格
-                sanitized_content = content.replace('\t', '    ')
+                sanitized_content = _quote_bare_ampersand_values(content.replace('\t', '    '))
                 return yaml.safe_load(sanitized_content)
         raise e
     except yaml.YAMLError as e:
