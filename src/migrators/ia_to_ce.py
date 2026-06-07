@@ -86,10 +86,12 @@ class IAMigrator(BaseMigrator):
         # print(f"原始路径: {path}")
         if path.startswith("textures/"):
             path = path[len("textures/"):]
-        if path.startswith("entity/equipment/humanoid/") or path.startswith("entity/equipment/humanoid_legging/") or path.startswith("entity/equipment/humanoid_leggings/"):
+        if path.startswith("entity/equipment/humanoid_legging/"):
+            return path.replace("entity/equipment/humanoid_legging/", "entity/equipment/humanoid_leggings/", 1)
+        if path.startswith("entity/equipment/humanoid/") or path.startswith("entity/equipment/humanoid_leggings/"):
             return path
         if "/" not in path and "\\" not in path:
-            target_folder = "humanoid_legging" if is_leggings else "humanoid"
+            target_folder = "humanoid_leggings" if is_leggings else "humanoid"
             return f"entity/equipment/{target_folder}"
         parts = [p for p in path.split("/") if p]
         excluded = {"textures", "entity", "equipment", "humanoid", "humanoid_legging", "humanoid_leggings", "armor", "armour"}
@@ -98,7 +100,7 @@ class IAMigrator(BaseMigrator):
         if has_duplicate:
             subparts = subparts[:-2]
         subpath = "/".join(subparts)
-        target_folder = "humanoid_legging" if is_leggings else "humanoid"
+        target_folder = "humanoid_leggings" if is_leggings else "humanoid"
         # if subpath:
         #     return f"entity/equipment/{target_folder}/{subpath}"
         return f"entity/equipment/{target_folder}"
@@ -150,7 +152,7 @@ class IAMigrator(BaseMigrator):
         parts = [p for p in rel_l.split("/") if p and p != "."]
         excluded = {"textures", "entity", "equipment", "humanoid", "humanoid_legging", "humanoid_leggings", "armor", "armour"}
         prefix = [p for p in parts if p.lower() not in excluded]
-        target_folder = "humanoid_legging" if self._is_leggings_texture(name, rel_path) else "humanoid"
+        target_folder = "humanoid_leggings" if self._is_leggings_texture(name, rel_path) else "humanoid"
         basename = os.path.splitext(name)[0]
         if prefix and prefix[-1].lower() == basename.lower():
             prefix = prefix[:-1]
@@ -186,7 +188,7 @@ class IAMigrator(BaseMigrator):
             prefix = [p for p in parts[:-1] if p.lower() not in excluded]
             if prefix and basename and prefix[-1].lower() == basename.lower():
                 prefix = prefix[:-1]
-            target_folder = "humanoid_legging" if self._is_leggings_texture(basename, path) else "humanoid"
+            target_folder = "humanoid_leggings" if self._is_leggings_texture(basename, path) else "humanoid"
             if basename:
                 subpath = "/".join(prefix + [basename])
             else:

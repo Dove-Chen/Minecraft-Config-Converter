@@ -16,6 +16,7 @@ from src.converters.ia_to_ce import IAConverter
 from src.converters.nexo_to_ce import NexoConverter
 from src.converters.nexo_to_ia import NexoToIAConverter
 from src.converters.oraxen_to_ia import OraxenToIAConverter
+from src.converters.ce_to_ia import CEToIAConverter
 from src.analyzer import PackageAnalyzer
 from src.utils.yaml_loader import safe_load_yaml
 
@@ -106,8 +107,10 @@ def analyze():
                     available_targets.append("ItemsAdder")
                 
             if "CraftEngine" in detected_formats:
-                 # 未来支持 CE -> IA
-                 pass
+                if "ItemsAdder" in detected_formats:
+                    warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
+                if "ItemsAdder" not in available_targets:
+                    available_targets.append("ItemsAdder")
 
             report["source_formats"] = detected_formats # 改名以反映复数
             report["available_targets"] = available_targets
@@ -178,11 +181,13 @@ def convert():
                 return _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
 
         if target_format == "ItemsAdder":
+            if source_format == "CraftEngine":
+                return _convert_ce_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Oraxen":
                 return _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Nexo":
                 return _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
-            return jsonify({'error': '目前仅支持 Oraxen/Nexo -> ItemsAdder'}), 400
+            return jsonify({'error': '目前仅支持 CraftEngine/Oraxen/Nexo -> ItemsAdder'}), 400
         
         return jsonify({'error': f'不支持的目标格式: {target_format}'}), 400
 
@@ -478,6 +483,151 @@ def _resolve_oraxen_namespace(oraxen_data, fallback_namespace, oraxen_pack_path)
         return pack_ns
     return fallback_namespace
 
+def _get_config_section(data, section_name):
+    if not isinstance(data, dict):
+        return {}
+    merged = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            continue
+        if key.split("#", 1)[0] != section_name:
+            continue
+        if isinstance(value, dict):
+            merged.update(value)
+    return merged
+
+def _merge_ce_sections(data):
+    merged = {}
+    for section_name in ("items", "equipments", "categories", "recipes", "furniture"):
+        section = _get_config_section(data, section_name)
+        if section:
+            merged[section_name] = section
+    return merged
+
+def _merge_ce_data(target, source):
+    for section_name, section_data in source.items():
+        if not isinstance(section_data, dict):
+            continue
+        target.setdefault(section_name, {}).update(section_data)
+
+def _is_valid_namespace(value):
+    return isinstance(value, str) and re.match(r'^[0-9a-z_.-]+$', value) is not None
+
+def _score_namespace(scores, value, weight=1):
+    if not _is_valid_namespace(value):
+        return
+    scores[value] = scores.get(value, 0) + weight
+
+def _infer_ce_namespace_from_path(config_path):
+    parts = os.path.normpath(config_path).split(os.sep)
+    lowered = [p.lower() for p in parts]
+    if "resources" in lowered:
+        index = lowered.index("resources")
+        if index + 1 < len(parts):
+            candidate = parts[index + 1].lower()
+            if _is_valid_namespace(candidate):
+                return candidate
+    return None
+
+def _infer_ce_namespace(ce_data, config_path):
+    scores = {}
+    for section_name in ("items", "equipments", "categories", "recipes", "furniture"):
+        section = ce_data.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for raw_key in section.keys():
+            if isinstance(raw_key, str) and ":" in raw_key:
+                namespace = raw_key.split(":", 1)[0].lower()
+                _score_namespace(scores, namespace, weight=3)
+
+    path_namespace = _infer_ce_namespace_from_path(config_path)
+    if path_namespace:
+        _score_namespace(scores, path_namespace, weight=2)
+
+    if scores:
+        return max(scores.items(), key=lambda x: x[1])[0]
+
+    fallback = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(os.path.basename(config_path))[0].lower())
+    return fallback if _is_valid_namespace(fallback) else "converted"
+
+def _collect_ce_resourcepack_paths(extract_dir, namespace=None):
+    paths = []
+    for root, dirs, _ in os.walk(extract_dir):
+        for dir_name in dirs:
+            dir_path = os.path.join(root, dir_name)
+            lower_name = dir_name.lower()
+            if lower_name == "resourcepack":
+                if namespace:
+                    inferred = _infer_ce_namespace_from_path(dir_path)
+                    if inferred and inferred != namespace:
+                        continue
+                normalized = os.path.normpath(dir_path)
+                if normalized not in paths:
+                    paths.append(normalized)
+            elif lower_name == "assets":
+                normalized_root = os.path.normpath(root)
+                if normalized_root not in paths:
+                    paths.append(normalized_root)
+    return paths
+
+def _convert_ce_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ce_config_entries = []
+
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for dir_name in dirs:
+            if dir_name.lower() == "craftengine":
+                scan_root = os.path.join(root, dir_name)
+                break
+        if scan_root != extract_dir:
+            break
+
+    for root, _, files in os.walk(scan_root):
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            config_path = os.path.join(root, file_name)
+            try:
+                data = safe_load_yaml(config_path)
+            except Exception as e:
+                print(f"Error loading CraftEngine config {config_path}: {e}")
+                continue
+            ce_data = _merge_ce_sections(data)
+            if ce_data:
+                ce_config_entries.append((config_path, ce_data))
+
+    if not ce_config_entries:
+        return jsonify({'error': '未能找到 CraftEngine 配置文件'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        namespace_map = {user_namespace: {}}
+        for _, ce_data in ce_config_entries:
+            _merge_ce_data(namespace_map[user_namespace], ce_data)
+    else:
+        namespace_map = {}
+        for config_path, ce_data in ce_config_entries:
+            namespace = _infer_ce_namespace(ce_data, config_path)
+            namespace_map.setdefault(namespace, {})
+            _merge_ce_data(namespace_map[namespace], ce_data)
+
+    for namespace, merged_data in namespace_map.items():
+        converter = CEToIAConverter()
+        ia_output_base = os.path.join(session_output_dir, "ItemsAdder", "contents", namespace)
+        ia_config_dir = os.path.join(ia_output_base, "configs")
+        ia_res_dir = os.path.join(ia_output_base, "resourcepack")
+
+        ce_resourcepack_paths = _collect_ce_resourcepack_paths(extract_dir, namespace=None if user_namespace else namespace)
+        if ce_resourcepack_paths:
+            converter.set_resource_paths(ce_resourcepack_paths, ia_res_dir)
+
+        converter.convert(merged_data, namespace=namespace)
+        converter.save_config(ia_config_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="ItemsAdder")
+
 def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
     # 1. 扫描 Nexo 配置和资源
     nexo_items_configs = []
@@ -632,7 +782,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
                         continue
                     
                     # 检查关键签名
-                    if "items" in data or "equipments" in data or "armors_rendering" in data:
+                    if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
                         ia_items_configs.append(full_path)
                     if "categories" in data:
                         ia_categories_configs.append(full_path)
@@ -655,7 +805,15 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
     converter = IAConverter()
     
     # 加载并合并所有物品配置
-    merged_items_data = {"items": {}, "equipments": {}, "armors_rendering": {}, "templates": {}, "recipes": {}, "info": {}}
+    merged_items_data = {
+        "items": {},
+        "equipments": {},
+        "armors_rendering": {},
+        "legacy_armor_renderings": {},
+        "templates": {},
+        "recipes": {},
+        "info": {}
+    }
     
     for config_path in ia_items_configs:
         data = converter.load_config(config_path)
@@ -673,6 +831,9 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
             
         if "armors_rendering" in data:
             merged_items_data.setdefault("armors_rendering", {}).update(data["armors_rendering"])
+
+        if "legacy_armor_renderings" in data:
+            merged_items_data.setdefault("legacy_armor_renderings", {}).update(data["legacy_armor_renderings"])
             
         if "templates" in data:
             merged_items_data.setdefault("templates", {}).update(data["templates"])

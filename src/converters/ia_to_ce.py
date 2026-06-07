@@ -1,7 +1,6 @@
 import os
 import json
 import re
-from turtle import position
 from .base import BaseConverter, RecipeDumper
 from src.migrators.ia_to_ce import IAMigrator
 
@@ -120,6 +119,9 @@ class IAConverter(BaseConverter):
         if "armors_rendering" in ia_data:
             self._convert_armors_rendering(ia_data["armors_rendering"])
 
+        if "legacy_armor_renderings" in ia_data:
+            self._convert_armors_rendering(ia_data["legacy_armor_renderings"])
+
         # 转换分类
         if "categories" in ia_data:
             self._convert_categories(ia_data["categories"])
@@ -187,6 +189,57 @@ class IAConverter(BaseConverter):
             self.armor_leggings_keys.add(key)
         else:
             self.armor_humanoid_keys.add(key)
+
+    def _build_resource_data(self, item_data):
+        resource = {}
+        raw_resource = item_data.get("resource", {})
+        if isinstance(raw_resource, dict):
+            resource.update(raw_resource)
+
+        material = item_data.get("material")
+        if material and "material" not in resource:
+            resource["material"] = material
+
+        graphics = item_data.get("graphics", {})
+        if isinstance(graphics, dict):
+            texture = graphics.get("texture")
+            model = graphics.get("model")
+            textures = graphics.get("textures")
+
+            if texture:
+                resource["textures"] = [texture] if isinstance(texture, str) else texture
+                resource.setdefault("generate", True)
+
+            if model:
+                resource["model_path"] = model
+                resource.setdefault("generate", False)
+
+            if isinstance(textures, dict):
+                ordered_keys = [
+                    "normal",
+                    "pulling_0",
+                    "pulling_1",
+                    "pulling_2",
+                    "arrow",
+                    "rocket",
+                    "cast",
+                    "blocking",
+                    "throwing"
+                ]
+                flattened = []
+                for key in ordered_keys:
+                    value = textures.get(key)
+                    if isinstance(value, str):
+                        flattened.append(value)
+                for value in textures.values():
+                    if isinstance(value, str) and value not in flattened:
+                        flattened.append(value)
+                if flattened:
+                    resource["textures"] = flattened
+                    resource.setdefault("generate", True)
+
+        resource.setdefault("material", "STONE")
+        return resource
     
     def _normalize_equipment_texture_path(self, raw_path, is_leggings=False):
         if not raw_path:
@@ -201,7 +254,7 @@ class IAConverter(BaseConverter):
             path = path[len("textures/"):]
         parts = [p for p in path.split("/") if p]
         subpath = parts[-1] if parts else "unknown"
-        target_folder = "humanoid_legging" if is_leggings else "humanoid"
+        target_folder = "humanoid_leggings" if is_leggings else "humanoid"
         final_path = f"entity/equipment/{target_folder}/{subpath}" if subpath else f"entity/equipment/{target_folder}"
         return f"{self.namespace}:{final_path}"
 
@@ -271,14 +324,14 @@ class IAConverter(BaseConverter):
     def _convert_item(self, key, data):
         ce_id = f"{self.namespace}:{key}"
         
-        resource = data.get("resource", {})
+        resource = self._build_resource_data(data)
         material = resource.get("material", "STONE")
-        display_name = data.get("display_name", key)
+        display_name = data.get("name") or data.get("display_name", key)
         
         ce_item = {
             "material": material,
             "data": {
-                "item-name": self._format_display_name(display_name, data)
+                "item_name": self._format_display_name(display_name, data)
             }
         }
         
@@ -289,7 +342,7 @@ class IAConverter(BaseConverter):
                 ce_item["data"]["lore"] = ce_lore
         
         if "model_id" in resource:
-            ce_item["custom-model-data"] = resource["model_id"]
+            ce_item["custom_model_data"] = resource["model_id"]
 
         # 根据材质或行为处理特定类型
         behaviours = data.get("behaviours", {})
@@ -320,93 +373,123 @@ class IAConverter(BaseConverter):
                     continue
                 if recipe_data.get("enabled") is False:
                     continue
-                ce_recipe_id = self._normalize_recipe_id(recipe_key)
-                if not ce_recipe_id:
-                    continue
-                ce_recipe = {}
-                ce_type = self._map_recipe_type(group_key, recipe_data)
-                if ce_type:
-                    ce_recipe["type"] = ce_type
-                if ce_type == "shaped":
-                    pattern = recipe_data.get("pattern")
-                    ingredients = recipe_data.get("ingredients", {})
-                    if pattern:
-                        ce_recipe["pattern"] = self._normalize_pattern(pattern, ingredients)
-                    if ingredients:
-                        ce_recipe["ingredients"] = {
-                            k: self._normalize_recipe_item(v) for k, v in ingredients.items()
-                        }
-                elif ce_type == "shapeless":
-                    ingredients = recipe_data.get("ingredients", [])
-                    ce_recipe["ingredients"] = self._normalize_shapeless_ingredients(ingredients)
-                elif ce_type in ["smelting", "blasting", "smoking", "campfire_cooking"]:
-                    ingredient = recipe_data.get("ingredient")
-                    if ingredient is None:
-                        ingredient = recipe_data.get("ingredients")
-                    if isinstance(ingredient, list):
-                        ingredient = ingredient[0] if ingredient else None
-                    if ingredient is not None:
-                        ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
-                    experience = recipe_data.get("experience")
-                    if experience is not None:
-                        ce_recipe["experience"] = experience
-                    time_val = recipe_data.get("time")
-                    if time_val is None:
-                        time_val = recipe_data.get("cookingTime")
-                    if time_val is not None:
-                        ce_recipe["time"] = time_val
-                    category = recipe_data.get("category")
-                    if category:
-                        ce_recipe["category"] = category
-                    group_val = recipe_data.get("group")
-                    if group_val:
-                        ce_recipe["group"] = group_val
-                elif ce_type == "stonecutting":
-                    ingredient = recipe_data.get("ingredient")
-                    if ingredient is not None:
-                        ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
-                    group_val = recipe_data.get("group")
-                    if group_val:
-                        ce_recipe["group"] = group_val
-                elif ce_type == "smithing_transform":
-                    template = recipe_data.get("template") or recipe_data.get("template-type")
-                    base = recipe_data.get("base")
-                    addition = recipe_data.get("addition")
-                    if template:
-                        ce_recipe["template-type"] = self._normalize_recipe_item(template)
-                    if base:
-                        ce_recipe["base"] = self._normalize_recipe_item(base)
-                    if addition:
-                        ce_recipe["addition"] = self._normalize_recipe_item(addition)
-                    merge_components = recipe_data.get("merge-components")
-                    if merge_components is not None:
-                        ce_recipe["merge-components"] = merge_components
-                elif ce_type == "brewing":
-                    ingredient = recipe_data.get("ingredient")
-                    container = recipe_data.get("container")
-                    if ingredient:
-                        ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
-                    if container:
-                        ce_recipe["container"] = self._normalize_recipe_item(container)
+                for ce_recipe_id, ce_type, variant_data in self._iter_recipe_variants(group_key, recipe_key, recipe_data):
+                    if not ce_recipe_id:
+                        continue
+                    ce_recipe = self._build_ce_recipe(ce_type, variant_data)
+                    if ce_recipe:
+                        self.ce_config["recipes"][ce_recipe_id] = ce_recipe
 
-                result = recipe_data.get("result")
-                if result is not None:
-                    result_id = None
-                    result_count = None
-                    if isinstance(result, dict):
-                        result_id = result.get("item") or result.get("id")
-                        result_count = result.get("amount") or result.get("count")
-                    else:
-                        result_id = result
-                    if result_id is not None:
-                        ce_result = {"id": self._normalize_recipe_item(result_id)}
-                        if result_count is None:
-                            result_count = 1
-                        ce_result["count"] = result_count
-                        ce_recipe["result"] = ce_result
+    def _iter_recipe_variants(self, group_key, recipe_key, recipe_data):
+        ce_type = self._map_recipe_type(group_key, recipe_data)
+        if ce_type is None:
+            return
 
-                if ce_recipe:
-                    self.ce_config["recipes"][ce_recipe_id] = ce_recipe
+        machine_types = self._map_cooking_machines(recipe_data.get("machines"))
+        if str(group_key).lower() == "cooking" and machine_types:
+            for machine_type in machine_types:
+                yield self._normalize_recipe_id(f"{recipe_key}_{machine_type}"), machine_type, recipe_data
+            return
+
+        if ce_type == "shaped":
+            patterns = self._extract_recipe_patterns(recipe_data)
+            if len(patterns) > 1:
+                for suffix, pattern in patterns:
+                    variant_data = dict(recipe_data)
+                    variant_data["pattern"] = pattern
+                    variant_key = recipe_key if not suffix else f"{recipe_key}_{suffix}"
+                    yield self._normalize_recipe_id(variant_key), ce_type, variant_data
+                return
+
+        yield self._normalize_recipe_id(recipe_key), ce_type, recipe_data
+
+    def _build_ce_recipe(self, ce_type, recipe_data):
+        ce_recipe = {}
+        if ce_type:
+            ce_recipe["type"] = ce_type
+        if ce_type == "shaped":
+            pattern = recipe_data.get("pattern")
+            ingredients = recipe_data.get("ingredients", {})
+            if pattern:
+                ce_recipe["pattern"] = self._normalize_pattern(pattern, ingredients)
+            if ingredients:
+                ce_recipe["ingredients"] = {
+                    k: self._normalize_recipe_item(v) for k, v in ingredients.items()
+                }
+        elif ce_type == "shapeless":
+            ingredients = recipe_data.get("ingredients", [])
+            ce_recipe["ingredients"] = self._normalize_shapeless_ingredients(ingredients)
+        elif ce_type in ["smelting", "blasting", "smoking", "campfire_cooking"]:
+            ingredient = recipe_data.get("ingredient")
+            if ingredient is None:
+                ingredient = recipe_data.get("ingredients")
+            if isinstance(ingredient, list):
+                ingredient = ingredient[0] if ingredient else None
+            if ingredient is not None:
+                ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
+            experience = recipe_data.get("experience")
+            if experience is None:
+                experience = recipe_data.get("exp")
+            if experience is not None:
+                ce_recipe["experience"] = experience
+            time_val = recipe_data.get("time")
+            if time_val is None:
+                time_val = recipe_data.get("cook_time")
+            if time_val is None:
+                time_val = recipe_data.get("cookingTime")
+            if time_val is not None:
+                ce_recipe["time"] = time_val
+            category = recipe_data.get("category")
+            if category:
+                ce_recipe["category"] = category
+            group_val = recipe_data.get("group")
+            if group_val:
+                ce_recipe["group"] = group_val
+        elif ce_type == "stonecutting":
+            ingredient = recipe_data.get("ingredient")
+            if ingredient is not None:
+                ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
+            group_val = recipe_data.get("group")
+            if group_val:
+                ce_recipe["group"] = group_val
+        elif ce_type == "smithing_transform":
+            template = recipe_data.get("template") or recipe_data.get("template-type")
+            base = recipe_data.get("base")
+            addition = recipe_data.get("addition")
+            if template:
+                ce_recipe["template-type"] = self._normalize_recipe_item(template)
+            if base:
+                ce_recipe["base"] = self._normalize_recipe_item(base)
+            if addition:
+                ce_recipe["addition"] = self._normalize_recipe_item(addition)
+            merge_components = recipe_data.get("merge-components")
+            if merge_components is not None:
+                ce_recipe["merge-components"] = merge_components
+        elif ce_type == "brewing":
+            ingredient = recipe_data.get("ingredient")
+            container = recipe_data.get("container")
+            if ingredient:
+                ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
+            if container:
+                ce_recipe["container"] = self._normalize_recipe_item(container)
+
+        result = recipe_data.get("result")
+        if result is not None:
+            result_id = None
+            result_count = None
+            if isinstance(result, dict):
+                result_id = result.get("item") or result.get("id")
+                result_count = result.get("amount") or result.get("count")
+            else:
+                result_id = result
+            if result_id is not None:
+                ce_result = {"id": self._normalize_recipe_item(result_id)}
+                if result_count is None:
+                    result_count = 1
+                ce_result["count"] = result_count
+                ce_recipe["result"] = ce_result
+
+        return ce_recipe
 
     def _normalize_recipe_id(self, raw_id):
         if not raw_id:
@@ -441,8 +524,23 @@ class IAConverter(BaseConverter):
                 if ns == "minecraft":
                     return f"minecraft:{path.lower()}"
                 return f"{ns}:{path}"
+            custom_ref = self._normalize_known_custom_recipe_item(item)
+            if custom_ref:
+                return custom_ref
             return f"minecraft:{item.lower()}"
         return value
+
+    def _normalize_known_custom_recipe_item(self, item):
+        if not isinstance(item, str):
+            return None
+        candidates = [
+            item,
+            item.lower()
+        ]
+        for candidate in candidates:
+            if f"{self.namespace}:{candidate}" in self.ce_config["items"]:
+                return f"{self.namespace}:{candidate}"
+        return None
 
     def _normalize_pattern(self, pattern, ingredients):
         if not isinstance(pattern, list):
@@ -471,11 +569,62 @@ class IAConverter(BaseConverter):
             return [self._normalize_recipe_item(v) for v in ingredients.values()]
         return ingredients
 
+    def _extract_recipe_patterns(self, recipe_data):
+        patterns = []
+        base_pattern = recipe_data.get("pattern")
+        if base_pattern:
+            patterns.append(("", base_pattern))
+
+        indexed_patterns = []
+        for key, value in recipe_data.items():
+            if not isinstance(key, str) or not key.startswith("pattern_"):
+                continue
+            suffix = key[len("pattern_"):]
+            if not suffix:
+                continue
+            indexed_patterns.append((suffix, value))
+        indexed_patterns.sort(key=lambda item: (not item[0].isdigit(), int(item[0]) if item[0].isdigit() else item[0]))
+        patterns.extend(indexed_patterns)
+        return patterns
+
+    def _map_cooking_machines(self, machines):
+        if machines is None:
+            return []
+        if isinstance(machines, str):
+            raw_machines = [machines]
+        elif isinstance(machines, list):
+            raw_machines = machines
+        else:
+            return []
+
+        mapping = {
+            "furnace": "smelting",
+            "smelting": "smelting",
+            "blast_furnace": "blasting",
+            "blast-furnace": "blasting",
+            "blasting": "blasting",
+            "smoker": "smoking",
+            "smoking": "smoking",
+            "campfire": "campfire_cooking",
+            "campfire_cooking": "campfire_cooking",
+            "campfire-cooking": "campfire_cooking"
+        }
+        result = []
+        for machine in raw_machines:
+            key = str(machine).strip().lower()
+            ce_type = mapping.get(key)
+            if ce_type and ce_type not in result:
+                result.append(ce_type)
+        return result
+
     def _map_recipe_type(self, group_key, recipe_data):
         group = str(group_key).lower()
         if isinstance(recipe_data, dict):
             if recipe_data.get("shapeless") is True:
                 return "shapeless"
+            machine_types = self._map_cooking_machines(recipe_data.get("machines"))
+            if group == "cooking" and machine_types:
+                return machine_types[0]
         mapping = {
             "crafting_table": "shaped",
             "shapeless": "shapeless",
@@ -488,6 +637,7 @@ class IAConverter(BaseConverter):
             "smoking": "smoking",
             "campfire": "campfire_cooking",
             "campfire_cooking": "campfire_cooking",
+            "cooking": "smelting",
             "stonecutting": "stonecutting",
             "smithing": "smithing_transform",
             "smithing_transform": "smithing_transform",
@@ -568,13 +718,13 @@ class IAConverter(BaseConverter):
 
             ce_item["settings"] = {
                 "equipment": {
-                    "asset-id": f"{self.namespace}:{equipment_id}",
+                    "asset_id": f"{self.namespace}:{equipment_id}",
                     "slot": slot
                 }
             }
         
         # 如果存在则添加模型
-        self._handle_generic_model(ce_item, ia_data.get("resource", {}))
+        self._handle_generic_model(ce_item, self._build_resource_data(ia_data))
 
     def _handle_furniture(self, ce_item, ia_data, ce_id):
         furniture_data = ia_data.get("behaviours", {}).get("furniture", {})
@@ -582,7 +732,8 @@ class IAConverter(BaseConverter):
         entity_type = furniture_data.get("entity", "armor_stand")
         
         # 通过JSON模型计算Y轴偏移量
-        model_path = ia_data.get("resource", {}).get("model_path")
+        resource = self._build_resource_data(ia_data)
+        model_path = resource.get("model_path")
         translation_y = self._calculate_model_y_translation(model_path)
         
         ce_item["behavior"] = {
@@ -621,7 +772,7 @@ class IAConverter(BaseConverter):
             
         ce_item["behavior"]["furniture"]["placement"] = placement
 
-        self._handle_generic_model(ce_item, ia_data.get("resource", {}))
+        self._handle_generic_model(ce_item, resource)
 
     def _calculate_model_y_translation(self, model_path):
         """
@@ -777,7 +928,7 @@ class IAConverter(BaseConverter):
 
         element_entry = {
             "item": ce_id,
-            "display-transform": "NONE",
+            "display_transform": "none",
             # "shadow-radius": 0.4,
             # "shadow-strength": 0.5,
             "billboard": "FIXED",
@@ -798,7 +949,7 @@ class IAConverter(BaseConverter):
             element_entry["scale"] = f"{s_x:g},{s_y:g},{s_z:g}"
 
         block_config = {
-            "loot-spawn-offset": "0,0.4,0",
+            "loot_spawn_offset": "0,0.4,0",
             "rules": {
                 "rotation": "eight",
                 "alignment": "center"
@@ -852,7 +1003,7 @@ class IAConverter(BaseConverter):
                 hitboxes.append({
                     "position": f"{w_offset:g},{h_offset:g},{l_offset:g}",
                     "type": "interaction",
-                    "blocks-building": is_solid,
+                    "blocks_building": is_solid,
                     "width": width,
                     "height": height,
                     "interactive": True,
@@ -891,7 +1042,7 @@ class IAConverter(BaseConverter):
                                 hitboxes.append({
                                     "position": pos_str,
                                     "type": "shulker",
-                                    "blocks-building": True,
+                                    "blocks_building": True,
                                     "interactive": True
                                 })
                 else:
@@ -899,7 +1050,7 @@ class IAConverter(BaseConverter):
                     hitboxes.append({
                         "position": f"{w_offset:g},{h_offset:g},{l_offset:g}",
                         "type": "interaction",
-                        "blocks-building": False,
+                        "blocks_building": False,
                         "width": width,
                         "height": height,
                         "interactive": True
@@ -913,7 +1064,7 @@ class IAConverter(BaseConverter):
                 "width": width,
                 "height": height,
                 "interactive": True,
-                "blocks-building": False
+                "blocks_building": False
             })
 
         elif placement_type == "wall" and not hitboxes:
@@ -924,7 +1075,7 @@ class IAConverter(BaseConverter):
                 "width": width,
                 "height": height,
                 "interactive": True,
-                "blocks-building": False
+                "blocks_building": False
             })
 
         if hitboxes:
@@ -1069,7 +1220,7 @@ class IAConverter(BaseConverter):
         template_def = {}
         args = {}
         
-        resource = ia_data.get("resource", {})
+        resource = self._build_resource_data(ia_data)
         textures = resource.get("textures")
         if not textures and resource.get("texture"):
             val = resource.get("texture")
@@ -1303,7 +1454,7 @@ class IAConverter(BaseConverter):
                 ce_eq["humanoid"] = self._normalize_equipment_texture_path(eq_data["layer_1"], is_leggings=False)
             if "layer_2" in eq_data:
                 self._register_equipment_texture(eq_data["layer_2"], is_leggings=True)
-                ce_eq["humanoid-leggings"] = self._normalize_equipment_texture_path(eq_data["layer_2"], is_leggings=True)
+                ce_eq["humanoid_leggings"] = self._normalize_equipment_texture_path(eq_data["layer_2"], is_leggings=True)
                 
             self.ce_config["equipments"][ce_eq_id] = ce_eq
 
@@ -1323,10 +1474,10 @@ class IAConverter(BaseConverter):
                 self._register_equipment_texture(armor_data["layer_1"], is_leggings=False)
                 ce_entry["humanoid"] = self._normalize_equipment_texture_path(armor_data["layer_1"], is_leggings=False)
 
-            # 映射 layer_2 -> humanoid-leggings
+            # 映射 layer_2 -> humanoid_leggings
             if "layer_2" in armor_data:
                 self._register_equipment_texture(armor_data["layer_2"], is_leggings=True)
-                ce_entry["humanoid-leggings"] = self._normalize_equipment_texture_path(armor_data["layer_2"], is_leggings=True)
+                ce_entry["humanoid_leggings"] = self._normalize_equipment_texture_path(armor_data["layer_2"], is_leggings=True)
 
             self.ce_config["equipments"][ce_key] = ce_entry
 
