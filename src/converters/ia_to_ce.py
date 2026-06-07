@@ -1,6 +1,7 @@
 import os
 import json
 import re
+from pathlib import Path
 from .base import BaseConverter, RecipeDumper
 from src.migrators.ia_to_ce import IAMigrator
 
@@ -9,6 +10,7 @@ class IAConverter(BaseConverter):
         super().__init__()
         self.ce_config = {
             "items": {},
+            "blocks": {},
             "equipments": {},
             "templates": {},
             "categories": {},
@@ -19,10 +21,56 @@ class IAConverter(BaseConverter):
         self.generated_models = {} # 存储需要生成的模型
         self.armor_humanoid_keys = set()
         self.armor_leggings_keys = set()
+        self.block_texture_keys = set()
+        self.block_model_keys = set()
+        self.ia_block_loots_by_type = {}
+        self.block_visual_state_counters = {}
 
     def set_resource_paths(self, ia_root, ce_root):
         self.ia_resourcepack_root = ia_root
         self.ce_resourcepack_root = ce_root
+
+    def _resolve_configuration_output_dirs(self, output_dir):
+        sections = ("items", "blocks", "categories", "recipes")
+        fallback_dirs = {section: output_dir for section in sections}
+        fallback_dirs["pack_root"] = None
+
+        output_path = Path(output_dir).resolve()
+        parts = output_path.parts
+        config_index = None
+        for index, part in enumerate(parts):
+            if part.lower() == "configuration":
+                config_index = index
+
+        if config_index is None:
+            return fallback_dirs
+
+        config_root = Path(*parts[:config_index + 1])
+        package_root = Path(*parts[:config_index]) if config_index > 0 else None
+        return {
+            "items": str(config_root / "items" / self.namespace),
+            "blocks": str(config_root / "blocks" / self.namespace),
+            "categories": str(config_root / "categories" / self.namespace),
+            "recipes": str(config_root / "recipes" / self.namespace),
+            "pack_root": str(package_root) if package_root else None,
+        }
+
+    def _write_pack_metadata(self, package_root):
+        if not package_root:
+            return
+        os.makedirs(package_root, exist_ok=True)
+        pack_path = os.path.join(package_root, "pack.yml")
+        if os.path.exists(pack_path):
+            return
+        self._write_yaml_with_footer(
+            {
+                "author": "MCC Tool",
+                "version": "1.0.0",
+                "description": "Converted from ItemsAdder by MCC Tool",
+                "namespace": self.namespace,
+            },
+            pack_path,
+        )
 
     def save_config(self, output_dir):
         """
@@ -33,8 +81,16 @@ class IAConverter(BaseConverter):
           armor.yml       (物品 - 护甲类型, 装备)
           categories.yml  (分类)
         """
+        output_dirs = self._resolve_configuration_output_dirs(output_dir)
+        items_output_dir = output_dirs["items"]
+        blocks_output_dir = output_dirs["blocks"]
+        categories_output_dir = output_dirs["categories"]
+        recipes_output_dir = output_dirs["recipes"]
+
+        self._write_pack_metadata(output_dirs.get("pack_root"))
+
         # 如果目录不存在则创建
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(items_output_dir, exist_ok=True)
         
         # 将物品分为护甲物品和其他物品
         armor_items = {}
@@ -60,7 +116,7 @@ class IAConverter(BaseConverter):
             items_data["items"] = other_items
             
         if items_data:
-            self._write_yaml_with_footer(items_data, os.path.join(output_dir, "items.yml"))
+            self._write_yaml_with_footer(items_data, os.path.join(items_output_dir, "items.yml"))
 
         # 2. 保存 armor.yml (护甲物品 + 装备)
         armor_data = {}
@@ -70,16 +126,20 @@ class IAConverter(BaseConverter):
              armor_data["equipments"] = self.ce_config["equipments"]
              
         if armor_data:
-            self._write_yaml_with_footer(armor_data, os.path.join(output_dir, "armor.yml"))
+            self._write_yaml_with_footer(armor_data, os.path.join(items_output_dir, "armor.yml"))
 
         # 3. 保存 categories.yml (分类)
         if self.ce_config["categories"]:
             cat_data = {"categories": self.ce_config["categories"]}
-            self._write_yaml_with_footer(cat_data, os.path.join(output_dir, "categories.yml"))
+            self._write_yaml_with_footer(cat_data, os.path.join(categories_output_dir, "categories.yml"))
 
         if self.ce_config["recipes"]:
             recipe_data = {"recipes": self.ce_config["recipes"]}
-            self._write_yaml_with_footer(recipe_data, os.path.join(output_dir, "recipe.yml"), dumper=RecipeDumper)
+            self._write_yaml_with_footer(recipe_data, os.path.join(recipes_output_dir, "recipe.yml"), dumper=RecipeDumper)
+
+        if self.ce_config["blocks"]:
+            block_data = {"blocks": self.ce_config["blocks"]}
+            self._write_yaml_with_footer(block_data, os.path.join(blocks_output_dir, "blocks.yml"))
 
         # 如果设置了路径，触发资源迁移
         if self.ia_resourcepack_root and self.ce_resourcepack_root:
@@ -88,7 +148,9 @@ class IAConverter(BaseConverter):
                 self.ce_resourcepack_root, 
                 self.namespace,
                 self.armor_humanoid_keys,
-                self.armor_leggings_keys
+                self.armor_leggings_keys,
+                self.block_texture_keys,
+                self.block_model_keys
             )
             migrator.migrate()
             
@@ -106,6 +168,9 @@ class IAConverter(BaseConverter):
             self.namespace = namespace
         elif "info" in ia_data and "namespace" in ia_data["info"]:
             self.namespace = ia_data["info"]["namespace"]
+
+        self.ia_block_loots_by_type = self._build_block_loot_index(ia_data.get("loots", {}))
+        self.block_visual_state_counters = {}
 
         # 转换物品
         if "items" in ia_data:
@@ -240,6 +305,384 @@ class IAConverter(BaseConverter):
 
         resource.setdefault("material", "STONE")
         return resource
+
+    def _build_block_loot_index(self, loots_data):
+        index = {}
+        if not isinstance(loots_data, dict):
+            return index
+        block_loots = loots_data.get("blocks", {})
+        if not isinstance(block_loots, dict):
+            return index
+
+        for loot_key, loot_data in block_loots.items():
+            if not isinstance(loot_data, dict):
+                continue
+            refs = [loot_key, loot_data.get("type")]
+            for ref in refs:
+                normalized = self._normalize_custom_id(ref)
+                if normalized:
+                    index[normalized] = loot_data
+        return index
+
+    def _normalize_custom_id(self, value):
+        if not isinstance(value, str) or not value.strip():
+            return None
+        ref = value.strip()
+        if ref.startswith("#"):
+            return ref
+        if ":" in ref:
+            ns, path = ref.split(":", 1)
+            if ns == "minecraft":
+                return f"minecraft:{path.lower()}"
+            return f"{self.namespace}:{path}"
+        return f"{self.namespace}:{ref}"
+
+    def _has_block_properties(self, item_data):
+        return bool(self._get_block_properties(item_data))
+
+    def _get_block_properties(self, item_data):
+        specific = item_data.get("specific_properties", {})
+        if not isinstance(specific, dict):
+            return {}
+        block_props = specific.get("block", {})
+        return block_props if isinstance(block_props, dict) else {}
+
+    def _first_present(self, *values):
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
+    def _normalize_block_state_type(self, block_props):
+        placed_model = block_props.get("placed_model", {})
+        if not isinstance(placed_model, dict):
+            placed_model = {}
+        raw_type = str(placed_model.get("type", block_props.get("type", "REAL_NOTE"))).strip().upper()
+        mapping = {
+            "REAL_NOTE": "note_block",
+            "NOTE_BLOCK": "note_block",
+            "REAL": "solid",
+            "SOLID": "solid",
+            "REAL_TRANSPARENT": "chorus",
+            "REAL_WIRE": "tripwire",
+            "WIRE": "tripwire"
+        }
+        return mapping.get(raw_type, "note_block")
+
+    def _block_visual_state_family(self, state_type):
+        mapping = {
+            "note_block": "note_block",
+            "solid": "note_block",
+            "mushroom": "mushroom_stem",
+            "chorus": "chorus_plant",
+            "tripwire": "tripwire"
+        }
+        return mapping.get(state_type, "note_block")
+
+    def _allocate_block_visual_state(self, state_type):
+        family = self._block_visual_state_family(state_type)
+        base_offsets = {
+            "note_block": 1000,
+            "mushroom_stem": 0,
+            "chorus_plant": 0,
+            "tripwire": 0
+        }
+        index = self.block_visual_state_counters.get(family, 0)
+        self.block_visual_state_counters[family] = index + 1
+        return f"{family}:{base_offsets.get(family, 0) + index}"
+
+    def _normalize_block_texture_path(self, raw_path):
+        if not raw_path:
+            return ""
+        path = str(raw_path).replace("\\", "/").strip()
+        if ":" in path:
+            path = path.split(":", 1)[1]
+        for prefix in ("textures/", "assets/"):
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+        if path.lower().endswith(".png"):
+            path = path[:-4]
+        path = path.strip("/")
+        if path.startswith("item/"):
+            path = path[len("item/"):]
+        if path.startswith("block/"):
+            path = path[len("block/"):]
+        return path
+
+    def _normalize_block_model_path(self, raw_path):
+        path = self._normalize_model_path_input(raw_path)
+        if path.startswith("models/"):
+            path = path[len("models/"):]
+        if path.startswith("item/"):
+            path = path[len("item/"):]
+        if path.startswith("block/"):
+            path = path[len("block/"):]
+        return path.strip("/")
+
+    def _resource_texture_values(self, resource):
+        textures = resource.get("textures")
+        if textures is None:
+            textures = resource.get("texture")
+        if isinstance(textures, str):
+            return [textures]
+        if isinstance(textures, list):
+            return [value for value in textures if isinstance(value, str)]
+        if isinstance(textures, dict):
+            values = []
+            for key in ("all", "side", "top", "bottom", "north", "south", "west", "east"):
+                value = textures.get(key)
+                if isinstance(value, str):
+                    values.append(value)
+            for value in textures.values():
+                if isinstance(value, str) and value not in values:
+                    values.append(value)
+            return values
+        return []
+
+    def _block_texture_ref(self, raw_texture):
+        path = self._normalize_block_texture_path(raw_texture)
+        if not path:
+            return "minecraft:block/stone"
+        self.block_texture_keys.add(path)
+        return f"{self.namespace}:block/{path}"
+
+    def _block_model_ref(self, raw_model_path):
+        path = self._normalize_block_model_path(raw_model_path)
+        if not path:
+            return None
+        self.block_model_keys.add(path)
+        return f"{self.namespace}:block/{path}"
+
+    def _build_block_state_model(self, item_key, resource):
+        model_ref = self._block_model_ref(resource.get("model_path"))
+        if model_ref:
+            return {"path": model_ref}, model_ref
+
+        textures = self._resource_texture_values(resource)
+        texture_ref = self._block_texture_ref(textures[0]) if textures else "minecraft:block/stone"
+        model_path = self._normalize_block_model_path(item_key) or item_key
+        model_ref = f"{self.namespace}:block/{model_path}"
+        return {
+            "path": model_ref,
+            "generation": {
+                "parent": "minecraft:block/cube_all",
+                "textures": {
+                    "all": texture_ref
+                }
+            }
+        }, model_ref
+
+    def _resource_location_to_model_rel(self, value):
+        if not isinstance(value, str) or not value.strip():
+            return None
+        ref = value.strip()
+        if ":" in ref:
+            ns, path = ref.split(":", 1)
+            if ns != self.namespace:
+                return None
+        else:
+            path = ref
+        path = path.replace("\\", "/").lstrip("/")
+        if path.startswith("models/"):
+            path = path[len("models/"):]
+        if path.endswith(".json"):
+            path = path[:-5]
+        return f"{path}.json"
+
+    def _register_block_generated_models(self, item_key, state_model, block_model_ref):
+        if not isinstance(state_model, dict):
+            return
+
+        block_model_rel = self._resource_location_to_model_rel(state_model.get("path"))
+        generation = state_model.get("generation")
+        if block_model_rel and isinstance(generation, dict):
+            parent = generation.get("parent", "minecraft:block/cube_all")
+            textures = generation.get("textures", {})
+            self.generated_models[block_model_rel] = {
+                "parent": parent,
+                "textures": textures if isinstance(textures, dict) else {}
+            }
+
+        item_model_rel = self._resource_location_to_model_rel(f"{self.namespace}:item/{item_key}")
+        if item_model_rel and block_model_ref:
+            self.generated_models[item_model_rel] = {
+                "parent": block_model_ref
+            }
+
+    def _normalize_block_sound(self, value):
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("sound") or value.get("id")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        sound = value.strip()
+        if ":" in sound:
+            return sound
+        sound = sound.lower()
+        if sound.startswith("block_"):
+            sound = "block." + sound[len("block_"):].replace("_", ".")
+        return f"minecraft:{sound}"
+
+    def _build_block_sounds(self, block_props):
+        sounds = {}
+        raw_sounds = block_props.get("sound") or block_props.get("sounds")
+        if not isinstance(raw_sounds, dict):
+            return sounds
+        for ce_key, ia_key in (
+            ("break", "break"),
+            ("place", "place"),
+            ("hit", "hit"),
+            ("step", "step"),
+            ("fall", "fall")
+        ):
+            sound = self._normalize_block_sound(raw_sounds.get(ia_key))
+            if sound:
+                sounds[ce_key] = sound
+        return sounds
+
+    def _build_block_tags(self, block_props):
+        tags = []
+        tools = block_props.get("break_tools_whitelist") or block_props.get("tools_whitelist")
+        if isinstance(tools, str):
+            tools = [tools]
+        if isinstance(tools, list):
+            tool_text = " ".join(str(tool).lower() for tool in tools)
+            tool_tags = {
+                "pickaxe": "minecraft:mineable/pickaxe",
+                "axe": "minecraft:mineable/axe",
+                "shovel": "minecraft:mineable/shovel",
+                "hoe": "minecraft:mineable/hoe"
+            }
+            for token, tag in tool_tags.items():
+                if token in tool_text and tag not in tags:
+                    tags.append(tag)
+        return tags
+
+    def _build_ce_block_settings(self, ce_id, block_props):
+        placed_model = block_props.get("placed_model", {})
+        if not isinstance(placed_model, dict):
+            placed_model = {}
+
+        settings = {"item": ce_id}
+        hardness = self._first_present(block_props.get("hardness"), placed_model.get("hardness"))
+        if hardness is not None:
+            settings["hardness"] = hardness
+        resistance = self._first_present(
+            block_props.get("resistance"),
+            block_props.get("blast_resistance"),
+            block_props.get("blast-resistant")
+        )
+        if resistance is not None:
+            settings["resistance"] = resistance
+        luminance = self._first_present(block_props.get("luminance"), block_props.get("light_level"))
+        if luminance is not None:
+            settings["luminance"] = luminance
+        sounds = self._build_block_sounds(block_props)
+        if sounds:
+            settings["sounds"] = sounds
+        tags = self._build_block_tags(block_props)
+        if tags:
+            settings["tags"] = tags
+        return settings
+
+    def _ia_block_drops_self(self, block_props):
+        if "drop_when_mined" in block_props:
+            return bool(block_props.get("drop_when_mined"))
+        if "cancel_drop" in block_props:
+            return not bool(block_props.get("cancel_drop"))
+        return True
+
+    def _normalize_loot_count(self, drop_data):
+        if not isinstance(drop_data, dict):
+            return None
+        min_amount = drop_data.get("min_amount")
+        max_amount = drop_data.get("max_amount")
+        amount = drop_data.get("amount")
+        if min_amount is not None and max_amount is not None:
+            if min_amount == max_amount:
+                return min_amount
+            return f"{min_amount}~{max_amount}"
+        if amount is not None:
+            return amount
+        return None
+
+    def _build_ce_loot_entry(self, item_id, drop_data=None):
+        entry = {
+            "type": "item",
+            "item": self._normalize_custom_id(item_id) or item_id
+        }
+        count = self._normalize_loot_count(drop_data)
+        if count is not None and count != 1:
+            entry["functions"] = [{"type": "set_count", "count": count}]
+        if isinstance(drop_data, dict):
+            chance = drop_data.get("chance")
+            if chance is not None:
+                try:
+                    chance_value = float(chance)
+                    if chance_value < 100:
+                        entry["conditions"] = [{"type": "random_chance", "chance": chance_value / 100.0}]
+                except (TypeError, ValueError):
+                    pass
+        return entry
+
+    def _build_ce_block_loot(self, ce_id, block_props):
+        loot_data = self.ia_block_loots_by_type.get(ce_id)
+        entries = []
+        if isinstance(loot_data, dict):
+            for drop_key, drop_data in loot_data.get("items", {}).items():
+                if isinstance(drop_data, dict):
+                    drop_item = drop_data.get("item") or drop_key
+                    entries.append(self._build_ce_loot_entry(drop_item, drop_data))
+                else:
+                    entries.append(self._build_ce_loot_entry(drop_data or drop_key))
+
+        if not entries and self._ia_block_drops_self(block_props):
+            entries.append(self._build_ce_loot_entry(ce_id))
+
+        if not entries:
+            return None
+
+        return {
+            "pools": [
+                {
+                    "rolls": 1,
+                    "conditions": [{"type": "survives_explosion"}],
+                    "entries": entries
+                }
+            ]
+        }
+
+    def _handle_block(self, ce_item, item_key, ia_data, ce_id):
+        block_props = self._get_block_properties(ia_data)
+        resource = self._build_resource_data(ia_data)
+        state_model, block_model_ref = self._build_block_state_model(item_key, resource)
+        self._register_block_generated_models(item_key, state_model, block_model_ref)
+        visual_state_type = self._normalize_block_state_type(block_props)
+
+        ce_item["behavior"] = {
+            "type": "block_item",
+            "block": ce_id
+        }
+        ce_item["model"] = {
+            "type": "minecraft:model",
+            "path": f"{self.namespace}:item/{item_key}",
+            "generation": {
+                "parent": block_model_ref
+            }
+        }
+
+        ce_block = {
+            "settings": self._build_ce_block_settings(ce_id, block_props),
+            "state": {
+                "state": self._allocate_block_visual_state(visual_state_type),
+                "model": state_model
+            }
+        }
+
+        loot = self._build_ce_block_loot(ce_id, block_props)
+        if loot:
+            ce_block["loot"] = loot
+
+        self.ce_config["blocks"][ce_id] = ce_block
     
     def _normalize_equipment_texture_path(self, raw_path, is_leggings=False):
         if not raw_path:
@@ -353,6 +796,8 @@ class IAConverter(BaseConverter):
              self._handle_generic_model(ce_item, resource)
         elif self._is_armor(material, data):
             self._handle_armor(ce_item, data)
+        elif self._has_block_properties(data):
+            self._handle_block(ce_item, key, data, ce_id)
         elif behaviours.get("furniture"):
             self._handle_furniture(ce_item, data, ce_id)
         elif self._is_complex_item(material):

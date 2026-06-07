@@ -13,7 +13,8 @@ class CEToIAConverter(BaseConverter):
             "items": {},
             "equipments": {},
             "categories": {},
-            "recipes": {}
+            "recipes": {},
+            "loots": {}
         }
         self.ce_resourcepack_roots = []
         self.ia_resourcepack_root = None
@@ -40,7 +41,8 @@ class CEToIAConverter(BaseConverter):
             "items": {},
             "equipments": {},
             "categories": {},
-            "recipes": {}
+            "recipes": {},
+            "loots": {}
         }
         self._ce_data = ce_data if isinstance(ce_data, dict) else {}
 
@@ -93,6 +95,12 @@ class CEToIAConverter(BaseConverter):
                 os.path.join(output_dir, f"{self.namespace}_recipes.yml")
             )
 
+        if self.ia_config["loots"]:
+            self._write_yaml_with_footer(
+                {"info": self.ia_config["info"], "loots": self.ia_config["loots"]},
+                os.path.join(output_dir, f"{self.namespace}_loots.yml")
+            )
+
         if self.ce_resourcepack_roots and self.ia_resourcepack_root:
             CEToIAMigrator(
                 self.ce_resourcepack_roots,
@@ -106,6 +114,9 @@ class CEToIAConverter(BaseConverter):
         furniture_map = self._ce_data.get("furniture", {})
         if not isinstance(furniture_map, dict):
             furniture_map = {}
+        block_map = self._ce_data.get("blocks", {})
+        if not isinstance(block_map, dict):
+            block_map = {}
 
         for raw_id, item_data in items.items():
             if not isinstance(item_data, dict):
@@ -124,6 +135,7 @@ class CEToIAConverter(BaseConverter):
                     ia_item["lore"] = normalized_lore
 
             self._apply_resource(ia_item, item_data)
+            self._apply_block(ia_item, item_data, raw_id, block_map)
             self._apply_equipment(ia_item, item_data)
             self._apply_furniture(ia_item, item_data, raw_id, furniture_map)
 
@@ -162,6 +174,267 @@ class CEToIAConverter(BaseConverter):
             resource["generate"] = False
 
         ia_item["resource"] = resource
+
+    def _apply_block(self, ia_item, item_data, raw_item_id, block_map):
+        behavior = self._get_dict_value(item_data, "behavior", default={})
+        if not isinstance(behavior, dict):
+            return
+        if self._get_dict_value(behavior, "type") != "block_item":
+            return
+
+        block_ref = self._get_dict_value(behavior, "block", default=raw_item_id)
+        block_data = self._resolve_block_data(block_ref, raw_item_id, block_map)
+        block_props = {
+            "placed_model": {
+                "type": self._ia_block_placed_model_type(block_data)
+            }
+        }
+
+        settings = self._get_dict_value(block_data, "settings", default={})
+        if isinstance(settings, dict):
+            hardness = self._get_dict_value(settings, "hardness")
+            if hardness is not None:
+                block_props["hardness"] = hardness
+            resistance = self._get_dict_value(settings, "resistance", "blast_resistance")
+            if resistance is not None:
+                block_props["blast_resistance"] = resistance
+            luminance = self._get_dict_value(settings, "luminance", "light_level")
+            if luminance is not None:
+                block_props["light_level"] = luminance
+            sounds = self._ce_sounds_to_ia(self._get_dict_value(settings, "sounds", default={}))
+            if sounds:
+                block_props["sound"] = sounds
+            tools = self._ce_tags_to_ia_tools(self._get_dict_value(settings, "tags", default=[]))
+            if tools:
+                block_props["break_tools_whitelist"] = tools
+
+        wrote_custom_loot = self._apply_block_loot(block_ref, raw_item_id, block_data)
+        if wrote_custom_loot:
+            block_props["cancel_drop"] = True
+        else:
+            block_props["drop_when_mined"] = True
+
+        ia_item.setdefault("specific_properties", {})["block"] = block_props
+        self._apply_block_resource(ia_item, block_data)
+
+    def _resolve_block_data(self, block_ref, raw_item_id, block_map):
+        if not isinstance(block_map, dict):
+            return {}
+        for candidate in (block_ref, raw_item_id):
+            if isinstance(candidate, str) and candidate in block_map:
+                data = block_map[candidate]
+                return data if isinstance(data, dict) else {}
+        wanted = self._local_id(block_ref or raw_item_id)
+        for key, data in block_map.items():
+            if self._local_id(key) == wanted:
+                return data if isinstance(data, dict) else {}
+        return {}
+
+    def _ia_block_placed_model_type(self, block_data):
+        state = self._get_dict_value(block_data, "state", default={})
+        auto_state = ""
+        if isinstance(state, dict):
+            auto_state = str(self._get_dict_value(state, "auto_state", "auto-state", default="")).lower()
+            if not auto_state:
+                raw_state = str(self._get_dict_value(state, "state", default="")).lower()
+                if "note_block" in raw_state or "note-block" in raw_state:
+                    auto_state = "note_block"
+                elif "mushroom" in raw_state:
+                    auto_state = "mushroom"
+                elif "chorus" in raw_state:
+                    auto_state = "chorus"
+                elif "tripwire" in raw_state:
+                    auto_state = "tripwire"
+        mapping = {
+            "note_block": "REAL_NOTE",
+            "note-block": "REAL_NOTE",
+            "solid": "REAL",
+            "mushroom": "REAL",
+            "chorus": "REAL_TRANSPARENT",
+            "tripwire": "REAL_WIRE"
+        }
+        return mapping.get(auto_state, "REAL_NOTE")
+
+    def _ce_sounds_to_ia(self, sounds):
+        result = {}
+        if not isinstance(sounds, dict):
+            return result
+        for key in ("break", "place", "hit", "step", "fall"):
+            value = self._get_dict_value(sounds, key)
+            if isinstance(value, dict):
+                sound = self._get_dict_value(value, "name", "sound", "id")
+            else:
+                sound = value
+            if sound:
+                result[key] = {"name": str(sound)}
+        return result
+
+    def _ce_tags_to_ia_tools(self, tags):
+        if isinstance(tags, str):
+            tags = [tags]
+        if not isinstance(tags, list):
+            return []
+        joined = " ".join(str(tag).lower() for tag in tags)
+        tools = []
+        for token, tool in (
+            ("mineable/pickaxe", "PICKAXE"),
+            ("mineable/axe", "AXE"),
+            ("mineable/shovel", "SHOVEL"),
+            ("mineable/hoe", "HOE")
+        ):
+            if token in joined and tool not in tools:
+                tools.append(tool)
+        return tools
+
+    def _apply_block_resource(self, ia_item, block_data):
+        state = self._get_dict_value(block_data, "state", default={})
+        if not isinstance(state, dict):
+            return
+        model_data = self._get_dict_value(state, "model", default={})
+        if not isinstance(model_data, dict):
+            return
+
+        generation = self._get_dict_value(model_data, "generation", default={})
+        textures = self._get_dict_value(generation, "textures", default={}) if isinstance(generation, dict) else {}
+        texture_path = None
+        if isinstance(textures, dict):
+            for key in ("all", "side", "top", "bottom", "north", "south", "west", "east"):
+                value = self._get_dict_value(textures, key)
+                if value:
+                    texture_path = self._normalize_ia_block_resource_path(value, suffix=".png")
+                    break
+
+        resource = ia_item.setdefault("resource", {})
+        if texture_path:
+            resource["generate"] = True
+            resource["textures"] = [texture_path]
+            resource.pop("model_path", None)
+            return
+
+        model_path = self._extract_model_path(model_data)
+        if model_path:
+            resource["generate"] = False
+            resource["model_path"] = self._normalize_ia_block_resource_path(model_path)
+
+    def _normalize_ia_block_resource_path(self, value, suffix=""):
+        path = self._normalize_resource_path(value)
+        if not path:
+            return path
+        for prefix in ("block/", "item/"):
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+        if suffix and not path.endswith(suffix):
+            path = f"{path}{suffix}"
+        return path
+
+    def _apply_block_loot(self, block_ref, raw_item_id, block_data):
+        loot = self._get_dict_value(block_data, "loot", default={})
+        if not isinstance(loot, dict):
+            return False
+        pools = self._get_dict_value(loot, "pools", default=[])
+        if not isinstance(pools, list):
+            return False
+
+        drops = []
+        for pool in pools:
+            if not isinstance(pool, dict):
+                continue
+            entries = self._get_dict_value(pool, "entries", default=[])
+            drops.extend(self._extract_ia_loot_entries(entries))
+
+        if not drops:
+            return False
+
+        block_item_ref = self._normalize_item_ref(block_ref or raw_item_id, keep_namespace=True)
+        self_only = all(
+            drop["item"] == block_item_ref and drop.get("min_amount", 1) == 1 and drop.get("max_amount", 1) == 1 and drop.get("chance", 100) == 100
+            for drop in drops
+        )
+        if self_only:
+            return False
+
+        loot_key = self._local_id(block_ref or raw_item_id)
+        loot_items = {}
+        for drop in drops:
+            item_key = self._local_id(drop["item"])
+            loot_items[item_key] = drop
+
+        self.ia_config.setdefault("loots", {}).setdefault("blocks", {})[loot_key] = {
+            "type": block_item_ref,
+            "items": loot_items
+        }
+        return True
+
+    def _extract_ia_loot_entries(self, entries):
+        result = []
+        if not isinstance(entries, list):
+            return result
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_type = str(self._get_dict_value(entry, "type", default="item")).lower()
+            if entry_type in {"alternatives", "sequence", "group"}:
+                children = self._get_dict_value(entry, "children", "entries", default=[])
+                result.extend(self._extract_ia_loot_entries(children))
+                continue
+            if entry_type != "item":
+                continue
+            item = self._get_dict_value(entry, "item", "name", "id")
+            if not item:
+                continue
+            drop = {
+                "item": self._normalize_item_ref(item, keep_namespace=True),
+                "min_amount": 1,
+                "max_amount": 1,
+                "chance": self._extract_entry_chance(entry)
+            }
+            min_amount, max_amount = self._extract_entry_count(entry)
+            if min_amount is not None:
+                drop["min_amount"] = min_amount
+                drop["max_amount"] = max_amount
+            result.append(drop)
+        return result
+
+    def _extract_entry_chance(self, entry):
+        conditions = self._get_dict_value(entry, "conditions", default=[])
+        if not isinstance(conditions, list):
+            return 100
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+            condition_type = str(self._get_dict_value(condition, "type", default="")).lower()
+            if condition_type == "random_chance":
+                chance = self._get_dict_value(condition, "chance", "probability", default=1)
+                try:
+                    return int(round(float(chance) * 100))
+                except (TypeError, ValueError):
+                    return 100
+        return 100
+
+    def _extract_entry_count(self, entry):
+        count = self._get_dict_value(entry, "count")
+        if count is None:
+            functions = self._get_dict_value(entry, "functions", default=[])
+            if isinstance(functions, list):
+                for function in functions:
+                    if not isinstance(function, dict):
+                        continue
+                    if str(self._get_dict_value(function, "type", default="")).lower() == "set_count":
+                        count = self._get_dict_value(function, "count")
+                        break
+        if count is None:
+            return None, None
+        if isinstance(count, str) and "~" in count:
+            left, right = count.split("~", 1)
+            try:
+                return int(float(left)), int(float(right))
+            except ValueError:
+                return None, None
+        try:
+            amount = int(float(count))
+            return amount, amount
+        except (TypeError, ValueError):
+            return None, None
 
     def _apply_equipment(self, ia_item, item_data):
         settings = self._get_dict_value(item_data, "settings", default={})

@@ -214,7 +214,7 @@ class PackageAnalyzer:
                     return True
                 if "material" in item and ("resource" not in item and "graphics" not in item):
                     return True
-        for key in ("equipments", "categories", "recipes", "furniture"):
+        for key in ("blocks", "equipments", "categories", "recipes", "furniture"):
             if self._get_section(data, key):
                 return True
         return False
@@ -222,7 +222,7 @@ class PackageAnalyzer:
     def _has_section_identifier(self, data):
         if not isinstance(data, dict):
             return False
-        ce_sections = {"items", "equipments", "categories", "recipes", "furniture"}
+        ce_sections = {"items", "blocks", "equipments", "categories", "recipes", "furniture"}
         for key in data.keys():
             if not isinstance(key, str) or "#" not in key:
                 continue

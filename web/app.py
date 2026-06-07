@@ -72,6 +72,35 @@ def _save_uploaded_zip(file, session_upload_dir):
     file.save(file_path)
     return filename, file_path
 
+def _get_original_upload_stem(session_upload_dir):
+    try:
+        for file_name in os.listdir(session_upload_dir):
+            if file_name.lower().endswith(".zip"):
+                return os.path.splitext(file_name)[0]
+    except OSError:
+        pass
+    return "converted"
+
+def _build_output_filename(original_stem, target_format):
+    original_stem = original_stem or "converted"
+    target_format = target_format or "converted"
+    marker = f"{target_format}_by_MCC"
+    raw_name = f"{original_stem}_{marker}.zip"
+    cleaned = re.sub(r'[\\/*?:"<>|]', "", raw_name)
+    output_filename = secure_filename(cleaned)
+    return output_filename or "converted_by_MCC.zip"
+
+def _next_available_output_path(output_filename):
+    candidate_name = output_filename
+    stem, ext = os.path.splitext(output_filename)
+    counter = 2
+    while True:
+        output_path = _safe_join_under(app.config['OUTPUT_FOLDER'], candidate_name)
+        if not os.path.exists(output_path):
+            return candidate_name, output_path
+        candidate_name = f"{stem}_{counter}{ext or '.zip'}"
+        counter += 1
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -526,7 +555,7 @@ def _get_config_section(data, section_name):
 
 def _merge_ce_sections(data):
     merged = {}
-    for section_name in ("items", "equipments", "categories", "recipes", "furniture"):
+    for section_name in ("items", "blocks", "equipments", "categories", "recipes", "furniture"):
         section = _get_config_section(data, section_name)
         if section:
             merged[section_name] = section
@@ -559,7 +588,7 @@ def _infer_ce_namespace_from_path(config_path):
 
 def _infer_ce_namespace(ce_data, config_path):
     scores = {}
-    for section_name in ("items", "equipments", "categories", "recipes", "furniture"):
+    for section_name in ("items", "blocks", "equipments", "categories", "recipes", "furniture"):
         section = ce_data.get(section_name)
         if not isinstance(section, dict):
             continue
@@ -840,6 +869,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
         "legacy_armor_renderings": {},
         "templates": {},
         "recipes": {},
+        "loots": {},
         "info": {}
     }
     
@@ -865,6 +895,11 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
             
         if "templates" in data:
             merged_items_data.setdefault("templates", {}).update(data["templates"])
+
+        if "loots" in data and isinstance(data["loots"], dict):
+            for loot_group, loot_group_data in data["loots"].items():
+                if isinstance(loot_group_data, dict):
+                    merged_items_data.setdefault("loots", {}).setdefault(loot_group, {}).update(loot_group_data)
 
     ia_data = merged_items_data
     
@@ -1131,22 +1166,9 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
 
 def _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="CraftEngine"):
     # 5. 压缩结果
-    # 获取原始文件名 
-    original_filename = "converted"
-    try:
-        for f in os.listdir(session_upload_dir):
-            if f.endswith(".zip"):
-                original_filename = f[:-4] # 移除 .zip
-                break
-    except:
-        pass
-
-    session_prefix = os.path.basename(os.path.normpath(session_upload_dir))
-    output_filename = f"{session_prefix}_{original_filename} [{target_format} by MCC].zip"
-    # 简单的文件名清理，防止非法字符
-    output_filename = secure_filename(re.sub(r'[\\/*?:"<>|]', "", output_filename))
-    
-    output_zip_path = _safe_join_under(app.config['OUTPUT_FOLDER'], output_filename)
+    original_stem = _get_original_upload_stem(session_upload_dir)
+    output_filename = _build_output_filename(original_stem, target_format)
+    output_filename, output_zip_path = _next_available_output_path(output_filename)
     # 我们希望压缩包解压后直接是 resources 文件夹，或者 CraftEngine 文件夹
 
     shutil.make_archive(output_zip_path[:-4], 'zip', session_output_dir, root_dir_name)

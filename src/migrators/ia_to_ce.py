@@ -4,11 +4,22 @@ import json
 from .base import BaseMigrator
 
 class IAMigrator(BaseMigrator):
-    def __init__(self, ia_resourcepack_path, ce_resourcepack_path, namespace, armor_humanoid_keys=None, armor_leggings_keys=None):
+    def __init__(
+        self,
+        ia_resourcepack_path,
+        ce_resourcepack_path,
+        namespace,
+        armor_humanoid_keys=None,
+        armor_leggings_keys=None,
+        block_texture_keys=None,
+        block_model_keys=None
+    ):
         super().__init__(ia_resourcepack_path, ce_resourcepack_path)
         self.namespace = namespace
         self.armor_humanoid_keys = set(armor_humanoid_keys or [])
         self.armor_leggings_keys = set(armor_leggings_keys or [])
+        self.block_texture_keys = set(block_texture_keys or [])
+        self.block_model_keys = set(block_model_keys or [])
 
     def migrate(self):
         """执行完整的迁移过程。"""
@@ -31,6 +42,10 @@ class IAMigrator(BaseMigrator):
     def set_armor_texture_keys(self, humanoid_keys, leggings_keys):
         self.armor_humanoid_keys = set(humanoid_keys or [])
         self.armor_leggings_keys = set(leggings_keys or [])
+
+    def set_block_resource_keys(self, texture_keys, model_keys):
+        self.block_texture_keys = set(texture_keys or [])
+        self.block_model_keys = set(model_keys or [])
 
     def _get_resource_dir(self, resource_type):
         """
@@ -105,6 +120,30 @@ class IAMigrator(BaseMigrator):
         #     return f"entity/equipment/{target_folder}/{subpath}"
         return f"entity/equipment/{target_folder}"
 
+    def _block_texture_key_to_dest_rel(self, key, directory=False):
+        path = key.replace("\\", "/").lstrip("/")
+        if path.startswith("textures/"):
+            path = path[len("textures/"):]
+        if path.startswith("item/"):
+            path = path[len("item/"):]
+        if path.startswith("block/"):
+            dest = path
+        else:
+            dest = f"block/{path}"
+        if directory:
+            return os.path.dirname(dest)
+        return dest
+
+    def _block_model_key_to_dest_rel(self, key):
+        path = key.replace("\\", "/").lstrip("/")
+        if path.startswith("models/"):
+            path = path[len("models/"):]
+        if path.startswith("item/"):
+            path = path[len("item/"):]
+        if path.startswith("block/"):
+            return path
+        return f"block/{path}"
+
     def _is_armor_icon_texture(self, name, rel_path):
         rel_l = rel_path.replace("\\", "/").lower()
         key = self._normalize_texture_key_from_path(os.path.join(rel_path, name))
@@ -165,6 +204,8 @@ class IAMigrator(BaseMigrator):
         if path.startswith("textures/"):
             path = path[len("textures/"):]
         key = self._normalize_texture_key_from_path(path)
+        if key in self.block_texture_keys:
+            return self._block_texture_key_to_dest_rel(key)
         if key in self.armor_humanoid_keys:
             return self._armor_key_to_dest_rel(key, is_leggings=False)
         if key in self.armor_leggings_keys:
@@ -223,7 +264,9 @@ class IAMigrator(BaseMigrator):
                 rel_path = os.path.relpath(root, src_dir)
                 src_file = os.path.join(root, file)
                 key = self._normalize_texture_key_from_path(os.path.join(rel_path, file))
-                if key in self.armor_humanoid_keys:
+                if key in self.block_texture_keys:
+                    dest_rel = self._block_texture_key_to_dest_rel(key, directory=True)
+                elif key in self.armor_humanoid_keys:
                     dest_rel = self._armor_key_to_dest_rel(key, is_leggings=False)
                 elif key in self.armor_leggings_keys:
                     dest_rel = self._armor_key_to_dest_rel(key, is_leggings=True)
@@ -263,16 +306,26 @@ class IAMigrator(BaseMigrator):
                 src_file = os.path.join(root, file)
                 
                 # 移动到 CE 中的 item/ 子目录，防止双重 item/
-                parts = rel_path.split(os.sep)
-                if parts[0] == "item":
-                    dest_rel = rel_path
+                model_key = os.path.join(rel_path, file[:-5]).replace("\\", "/")
+                if model_key.startswith("./"):
+                    model_key = model_key[2:]
+
+                if model_key in self.block_model_keys:
+                    dest_key = self._block_model_key_to_dest_rel(model_key)
+                    dest_rel = os.path.dirname(dest_key)
+                    dest_file_name = os.path.basename(dest_key) + ".json"
                 else:
-                    dest_rel = os.path.join("item", rel_path)
+                    parts = rel_path.split(os.sep)
+                    if parts[0] == "item":
+                        dest_rel = rel_path
+                    else:
+                        dest_rel = os.path.join("item", rel_path)
+                    dest_file_name = file
                     
                 dest_dir = os.path.join(self.output_path, "assets", self.namespace, "models", dest_rel)
                 os.makedirs(dest_dir, exist_ok=True)
                 
-                dest_file = os.path.join(dest_dir, file)
+                dest_file = os.path.join(dest_dir, dest_file_name)
                 
                 # 我们需要处理 JSON 内容以修复纹理路径
                 self._process_model_file(src_file, dest_file)
