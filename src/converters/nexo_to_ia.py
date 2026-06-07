@@ -1,6 +1,6 @@
 import os
 import re
-from .base import BaseConverter
+from .base import BaseConverter, RecipeDumper
 from src.migrators.nexo_to_ia import NexoToIAMigrator
 
 
@@ -11,7 +11,8 @@ class NexoToIAConverter(BaseConverter):
             "info": {"namespace": self.namespace},
             "items": {},
             "categories": {},
-            "equipments": {}
+            "equipments": {},
+            "recipes": {}
         }
         self.nexo_resourcepack_root = None
         self.nexo_resourcepack_roots = []
@@ -40,16 +41,34 @@ class NexoToIAConverter(BaseConverter):
         self.ia_config["items"] = {}
         self.ia_config["categories"] = {}
         self.ia_config["equipments"] = {}
+        self.ia_config["recipes"] = {}
         self._armor_candidates = []
 
         if isinstance(nexo_data, dict):
-            for key, value in nexo_data.items():
-                if isinstance(value, dict):
-                    self._convert_item(key, value)
+            items_data = nexo_data.get("items")
+            if isinstance(items_data, dict):
+                self._convert_items(items_data)
+            else:
+                self._convert_items(
+                    {
+                        key: value
+                        for key, value in nexo_data.items()
+                        if key not in {"categories", "recipes"} and isinstance(value, dict)
+                    }
+                )
+            self._convert_categories(nexo_data.get("categories", {}))
+            self._convert_recipes(nexo_data.get("recipes", {}))
 
         self._finalize_armors()
         self._generate_default_category()
         return self.ia_config
+
+    def _convert_items(self, items_data):
+        if not isinstance(items_data, dict):
+            return
+        for key, value in items_data.items():
+            if isinstance(value, dict):
+                self._convert_item(key, value)
 
     def save_config(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -84,6 +103,17 @@ class NexoToIAConverter(BaseConverter):
             }
             self._write_yaml_with_footer(categories_data, os.path.join(output_dir, f"{self.namespace}_category.yml"))
 
+        if self.ia_config["recipes"]:
+            recipes_data = {
+                "info": self.ia_config["info"],
+                "recipes": self.ia_config["recipes"]
+            }
+            self._write_yaml_with_footer(
+                recipes_data,
+                os.path.join(output_dir, f"{self.namespace}_recipes.yml"),
+                dumper=RecipeDumper
+            )
+
         if self.nexo_resourcepack_root and self.ia_resourcepack_root:
             migrator = NexoToIAMigrator(
                 self.nexo_resourcepack_roots or self.nexo_resourcepack_root,
@@ -95,6 +125,10 @@ class NexoToIAConverter(BaseConverter):
     def _convert_item(self, key, data):
         ia_item = {}
 
+        enabled = self._get_dict_value(data, "enabled")
+        if enabled is not None:
+            ia_item["enabled"] = bool(enabled)
+
         display_name = self._get_dict_value(data, "itemname", "customname")
         if isinstance(display_name, str) and display_name.strip():
             ia_item["display_name"] = self._to_plain_text(display_name)
@@ -102,6 +136,10 @@ class NexoToIAConverter(BaseConverter):
         permission = self._get_dict_value(data, "permission")
         if isinstance(permission, str) and permission.strip():
             ia_item["permission"] = permission
+
+        enchants = self._get_dict_value(data, "enchants", "enchantments")
+        if enchants:
+            ia_item["enchants"] = enchants
 
         self._apply_durability(ia_item, data)
         self._apply_attribute_modifiers(ia_item, data)
@@ -183,24 +221,36 @@ class NexoToIAConverter(BaseConverter):
         if isinstance(furniture, dict) and furniture:
             ia_furniture = {}
             furniture_type = str(self._get_dict_value(furniture, "type", default="ITEM_FRAME")).lower()
-            ia_furniture["entity"] = "item_frame" if "item_frame" in furniture_type else "armor_stand"
+            if "item_frame" in furniture_type:
+                ia_furniture["entity"] = "item_frame"
+            elif "armor_stand" in furniture_type:
+                ia_furniture["entity"] = "armor_stand"
+            else:
+                ia_furniture["entity"] = "item_display"
 
             hitbox = self._get_dict_value(furniture, "hitbox", default={})
             barriers = []
+            ia_hitbox = {}
             if isinstance(hitbox, dict):
                 raw_barriers = self._get_dict_value(hitbox, "barriers", default=[])
                 if isinstance(raw_barriers, list):
                     barriers = raw_barriers
-            if barriers:
-                ia_furniture["solid"] = True
-                ia_furniture["hitbox"] = {
-                    "width": 1,
-                    "height": 1,
-                    "length": 1,
-                    "width_offset": 0,
-                    "height_offset": 0,
-                    "length_offset": 0
-                }
+                for key in ("width", "height", "length"):
+                    value = self._get_dict_value(hitbox, key)
+                    if value is not None:
+                        ia_hitbox[key] = value
+                offsets = self._barriers_to_hitbox_offsets(barriers)
+                if offsets:
+                    ia_hitbox.update(offsets)
+            if ia_hitbox or barriers:
+                ia_furniture["solid"] = bool(self._get_dict_value(furniture, "solid", default=True))
+                ia_hitbox.setdefault("width", 1)
+                ia_hitbox.setdefault("height", 1)
+                ia_hitbox.setdefault("length", 1)
+                ia_hitbox.setdefault("width_offset", 0)
+                ia_hitbox.setdefault("height_offset", 0)
+                ia_hitbox.setdefault("length_offset", 0)
+                ia_furniture["hitbox"] = ia_hitbox
 
             restricted_rotation = str(self._get_dict_value(furniture, "restricted_rotation", default="")).upper()
             tracking_rotation = str(
@@ -223,6 +273,33 @@ class NexoToIAConverter(BaseConverter):
                     "walls": bool(self._get_dict_value(limited, "wall", "walls", default=False))
                 }
 
+            light_level = self._get_dict_value(furniture, "light_level", "light-level")
+            if light_level is not None:
+                ia_furniture["light_level"] = light_level
+            small = self._get_dict_value(furniture, "small")
+            if small is not None:
+                ia_furniture["small"] = small
+            solid = self._get_dict_value(furniture, "solid")
+            if solid is not None:
+                ia_furniture["solid"] = solid
+
+            properties = self._get_dict_value(furniture, "properties", default={})
+            if isinstance(properties, dict):
+                display_transformation = self._get_dict_value(
+                    properties,
+                    "display_transformation",
+                    "display-transform",
+                    "display_transform",
+                )
+                if display_transformation is not None:
+                    ia_furniture["display_transformation"] = display_transformation
+
+            seats = self._get_dict_value(furniture, "seats", default=[])
+            if isinstance(seats, list) and seats:
+                behaviours["furniture_sit"] = {
+                    "sit_height": self._infer_ia_sit_height(seats[0])
+                }
+
             behaviours["furniture"] = ia_furniture
 
         if behaviours:
@@ -239,6 +316,10 @@ class NexoToIAConverter(BaseConverter):
             material = self._resolve_armor_material(armor_slot)
         resource = {"material": material}
 
+        model_id = self._get_dict_value(data, "model", "custom_model_data", "custom-model-data")
+        if isinstance(model_id, (int, float)):
+            resource["model_id"] = int(model_id)
+
         generate_model = self._get_dict_value(pack, "generate_model", "generate")
         if isinstance(generate_model, bool):
             resource["generate"] = generate_model
@@ -248,6 +329,11 @@ class NexoToIAConverter(BaseConverter):
         model_path = self._normalize_model_path(self._get_dict_value(pack, "model"))
         if model_path:
             resource["model_path"] = model_path
+        else:
+            fallback_model = self._first_pack_state_model(pack)
+            if fallback_model:
+                resource["model_path"] = fallback_model
+                resource["generate"] = False
 
         texture_value = self._get_dict_value(pack, "texture")
         textures = self._get_dict_value(pack, "textures")
@@ -274,19 +360,24 @@ class NexoToIAConverter(BaseConverter):
         custom_armor = self._get_dict_value(pack, "CustomArmor", "custom_armor", "customArmor", default={})
         if not isinstance(custom_armor, dict):
             custom_armor = {}
+        equipment_id = self._normalize_equipment_id(
+            self._get_dict_value(custom_armor, "id", "asset_id", "asset-id")
+        )
         layer_1 = self._normalize_texture_path(self._get_dict_value(custom_armor, "layer1", "layer_1"))
         layer_2 = self._normalize_texture_path(self._get_dict_value(custom_armor, "layer2", "layer_2"))
         if armor_slot:
             self._armor_candidates.append({
                 "item_id": item_id,
                 "slot": armor_slot,
+                "equipment_id": equipment_id,
                 "layer_1": layer_1,
                 "layer_2": layer_2
             })
 
     def _finalize_armors(self):
         armor_items = {}
-        layer_votes = {}
+        armor_sets = {}
+        fallback_layer_votes = {}
 
         for candidate in self._armor_candidates:
             item_id = candidate.get("item_id")
@@ -295,34 +386,44 @@ class NexoToIAConverter(BaseConverter):
                 continue
             if item_id not in self.ia_config["items"]:
                 continue
-            armor_items[item_id] = slot
+            equipment_id = candidate.get("equipment_id") or f"{self.namespace.replace('_', '')}armor"
+            armor_items[item_id] = (slot, equipment_id)
             layer_1 = candidate.get("layer_1")
             layer_2 = candidate.get("layer_2")
-            if layer_1 and layer_2:
+            if layer_1 or layer_2:
+                armor_sets.setdefault(equipment_id, {})
+                if layer_1:
+                    armor_sets[equipment_id]["layer_1"] = layer_1
+                if layer_2:
+                    armor_sets[equipment_id]["layer_2"] = layer_2
+            if not candidate.get("equipment_id") and layer_1 and layer_2:
                 pair = (layer_1, layer_2)
-                layer_votes[pair] = layer_votes.get(pair, 0) + 1
+                fallback_layer_votes[pair] = fallback_layer_votes.get(pair, 0) + 1
 
         if not armor_items:
             self.ia_config["equipments"] = {}
             return
 
-        layer_pair = None
-        if layer_votes:
-            layer_pair = max(layer_votes.items(), key=lambda x: x[1])[0]
-        else:
-            layer_pair = self._detect_armor_layers()
-        if not layer_pair:
-            return
+        fallback_id = f"{self.namespace.replace('_', '')}armor"
+        if fallback_id not in armor_sets:
+            layer_pair = None
+            if fallback_layer_votes:
+                layer_pair = max(fallback_layer_votes.items(), key=lambda x: x[1])[0]
+            else:
+                layer_pair = self._detect_armor_layers()
+            if layer_pair:
+                armor_sets[fallback_id] = {
+                    "layer_1": layer_pair[0],
+                    "layer_2": layer_pair[1]
+                }
 
-        equipment_id = f"{self.namespace.replace('_', '')}armor"
         self.ia_config["equipments"] = {
-            equipment_id: {
-                "layer_1": layer_pair[0],
-                "layer_2": layer_pair[1]
-            }
+            equipment_id: layers
+            for equipment_id, layers in armor_sets.items()
+            if layers
         }
 
-        for item_id, slot in armor_items.items():
+        for item_id, (slot, equipment_id) in armor_items.items():
             self.ia_config["items"][item_id]["equipment"] = {
                 "id": equipment_id,
                 "slot": slot.upper()
@@ -424,6 +525,8 @@ class NexoToIAConverter(BaseConverter):
             _, path = path.split(":", 1)
             path = path.strip()
         path = path.replace("\\", "/").strip("/")
+        if path.endswith(".json"):
+            path = path[:-5]
         if path.startswith(f"{self.namespace}/"):
             path = path[len(self.namespace) + 1:]
         return path
@@ -435,6 +538,8 @@ class NexoToIAConverter(BaseConverter):
         if ":" in path:
             _, path = path.split(":", 1)
         path = path.replace("\\", "/").strip("/")
+        if path.endswith(".png"):
+            path = path[:-4]
         if path.startswith(f"{self.namespace}/"):
             path = path[len(self.namespace) + 1:]
         return path
@@ -445,8 +550,209 @@ class NexoToIAConverter(BaseConverter):
             path = path[len(self.namespace) + 1:]
         return path
 
+    def _normalize_equipment_id(self, value):
+        if not isinstance(value, str) or not value.strip():
+            return None
+        ref = value.strip()
+        if ":" in ref:
+            _, ref = ref.split(":", 1)
+        return ref
+
+    def _first_pack_state_model(self, pack):
+        for key in ("normal_model", "blocking_model", "cast_model", "charged_model", "firework_model"):
+            value = self._get_dict_value(pack, key)
+            normalized = self._normalize_model_path(value)
+            if normalized:
+                return normalized
+        pulling = self._get_dict_value(pack, "pulling_models", default=[])
+        if isinstance(pulling, list):
+            for value in pulling:
+                normalized = self._normalize_model_path(value)
+                if normalized:
+                    return normalized
+        return None
+
+    def _barriers_to_hitbox_offsets(self, barriers):
+        if not barriers:
+            return {}
+        first = barriers[0]
+        if not isinstance(first, str):
+            return {}
+        try:
+            width_offset, height_offset, length_offset = [float(part) for part in first.split(",", 2)]
+        except (TypeError, ValueError):
+            return {}
+        return {
+            "width_offset": width_offset,
+            "height_offset": height_offset,
+            "length_offset": length_offset,
+        }
+
+    def _infer_ia_sit_height(self, seat):
+        if not isinstance(seat, str):
+            return 0.5
+        try:
+            parts = seat.split()[0].split(",")
+            if len(parts) >= 2:
+                return float(parts[1]) + 0.85
+        except Exception:
+            return 0.5
+        return 0.5
+
+    def _convert_categories(self, categories):
+        if not isinstance(categories, dict):
+            return
+        for raw_id, category_data in categories.items():
+            if not isinstance(category_data, dict):
+                continue
+            category_id = self._local_id(raw_id)
+            raw_items = self._get_dict_value(category_data, "items", "list", default=[])
+            items = []
+            if isinstance(raw_items, list):
+                for value in raw_items:
+                    if isinstance(value, str) and not value.startswith("#"):
+                        normalized = self._normalize_item_ref(value, keep_namespace=True)
+                        if normalized not in items:
+                            items.append(normalized)
+            icon = self._normalize_item_ref(
+                self._get_dict_value(category_data, "icon", default=items[0] if items else ""),
+                keep_namespace=True,
+            )
+            entry = {
+                "enabled": not bool(self._get_dict_value(category_data, "hidden", default=False)),
+                "name": self._to_plain_text(str(self._get_dict_value(category_data, "name", default=category_id))),
+                "icon": icon,
+                "items": items,
+            }
+            permission = self._get_dict_value(category_data, "permission")
+            if isinstance(permission, str) and permission.strip():
+                entry["permission"] = permission
+            self.ia_config["categories"][category_id] = entry
+
+    def _convert_recipes(self, recipes):
+        if not isinstance(recipes, dict):
+            return
+        result = {}
+        for raw_id, recipe_data in recipes.items():
+            if not isinstance(recipe_data, dict):
+                continue
+            recipe_id = self._local_id(raw_id)
+            recipe_type = str(self._get_dict_value(recipe_data, "type", default="shaped")).lower()
+            if recipe_type in {"shaped", "shapeless"}:
+                result.setdefault("crafting_table", {})[recipe_id] = self._convert_crafting_recipe(recipe_type, recipe_data)
+            elif recipe_type in {"smelting", "blasting", "smoking", "campfire_cooking"}:
+                result.setdefault("cooking", {})[recipe_id] = self._convert_cooking_recipe(recipe_type, recipe_data)
+            elif recipe_type == "smithing_transform":
+                result.setdefault("smithing", {})[recipe_id] = self._convert_smithing_recipe(recipe_data)
+            elif recipe_type == "stonecutting":
+                result.setdefault("stonecutting", {})[recipe_id] = self._convert_stonecutting_recipe(recipe_data)
+            elif recipe_type == "brewing":
+                result.setdefault("brewing", {})[recipe_id] = self._convert_brewing_recipe(recipe_data)
+        self.ia_config["recipes"] = result
+
+    def _convert_crafting_recipe(self, recipe_type, recipe_data):
+        entry = {"enabled": True}
+        if recipe_type == "shapeless":
+            entry["shapeless"] = True
+        pattern = self._get_dict_value(recipe_data, "pattern")
+        if pattern and recipe_type == "shaped":
+            entry["pattern"] = pattern
+        ingredients = self._get_dict_value(recipe_data, "ingredients")
+        if ingredients is not None:
+            entry["ingredients"] = self._normalize_recipe_value(ingredients)
+        result = self._convert_recipe_result(self._get_dict_value(recipe_data, "result"))
+        if result:
+            entry["result"] = result
+        return entry
+
+    def _convert_cooking_recipe(self, recipe_type, recipe_data):
+        machine_map = {
+            "smelting": "furnace",
+            "blasting": "blast_furnace",
+            "smoking": "smoker",
+            "campfire_cooking": "campfire",
+        }
+        entry = {
+            "enabled": True,
+            "machines": [machine_map.get(recipe_type, "furnace")],
+        }
+        ingredient = self._get_dict_value(recipe_data, "ingredient", "ingredients")
+        if isinstance(ingredient, list):
+            ingredient = ingredient[0] if ingredient else None
+        if ingredient is not None:
+            entry["ingredient"] = self._normalize_recipe_value(ingredient)
+        result = self._convert_recipe_result(self._get_dict_value(recipe_data, "result"))
+        if result:
+            entry["result"] = result
+        experience = self._get_dict_value(recipe_data, "experience", "exp")
+        if experience is not None:
+            entry["exp"] = experience
+        cook_time = self._get_dict_value(recipe_data, "time", "cook_time", "cookingTime")
+        if cook_time is not None:
+            entry["cook_time"] = cook_time
+        return entry
+
+    def _convert_smithing_recipe(self, recipe_data):
+        entry = {"enabled": True}
+        for nexo_key, ia_key in (("template-type", "template"), ("template", "template"), ("base", "base"), ("addition", "addition")):
+            value = self._get_dict_value(recipe_data, nexo_key)
+            if value is not None and ia_key not in entry:
+                entry[ia_key] = self._normalize_recipe_value(value)
+        result = self._convert_recipe_result(self._get_dict_value(recipe_data, "result"))
+        if result:
+            entry["result"] = result
+        return entry
+
+    def _convert_stonecutting_recipe(self, recipe_data):
+        entry = {"enabled": True}
+        ingredient = self._get_dict_value(recipe_data, "ingredient", "ingredients")
+        if ingredient is not None:
+            entry["ingredient"] = self._normalize_recipe_value(ingredient)
+        result = self._convert_recipe_result(self._get_dict_value(recipe_data, "result"))
+        if result:
+            entry["result"] = result
+        return entry
+
+    def _convert_brewing_recipe(self, recipe_data):
+        entry = {"enabled": True}
+        for key in ("ingredient", "container"):
+            value = self._get_dict_value(recipe_data, key)
+            if value is not None:
+                entry[key] = self._normalize_recipe_value(value)
+        result = self._convert_recipe_result(self._get_dict_value(recipe_data, "result"))
+        if result:
+            entry["result"] = result
+        return entry
+
+    def _convert_recipe_result(self, result):
+        if result is None:
+            return None
+        if isinstance(result, dict):
+            item_id = self._get_dict_value(result, "id", "item")
+            amount = self._get_dict_value(result, "count", "amount", default=1)
+        else:
+            item_id = result
+            amount = 1
+        if item_id is None:
+            return None
+        return {
+            "item": self._normalize_recipe_value(item_id),
+            "amount": amount,
+        }
+
+    def _normalize_recipe_value(self, value):
+        if isinstance(value, dict):
+            return {key: self._normalize_recipe_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._normalize_recipe_value(item) for item in value]
+        if isinstance(value, str):
+            return self._normalize_item_ref(value, keep_namespace=True) if self._looks_like_custom_item(value) else value
+        return value
+
     def _generate_default_category(self):
         item_ids = list(self.ia_config["items"].keys())
+        if self.ia_config["categories"]:
+            return
         if not item_ids:
             self.ia_config["categories"] = {}
             return
@@ -466,6 +772,31 @@ class NexoToIAConverter(BaseConverter):
     def _to_plain_text(self, value):
         plain = re.sub(r"<[^>]+>", "", value)
         return plain.strip()
+
+    def _normalize_item_ref(self, value, keep_namespace=False):
+        if not isinstance(value, str) or not value.strip():
+            return value
+        ref = value.strip()
+        if ref.startswith("#") or ref.startswith("minecraft:"):
+            return ref
+        if ":" in ref:
+            _, item_id = ref.split(":", 1)
+            return f"{self.namespace}:{item_id}" if keep_namespace else item_id
+        return f"{self.namespace}:{ref}" if keep_namespace else ref
+
+    def _looks_like_custom_item(self, value):
+        if not isinstance(value, str):
+            return False
+        if value.startswith("#") or value.startswith("minecraft:"):
+            return False
+        return ":" in value or re.match(r"^[0-9a-z_.-]+$", value) is not None
+
+    def _local_id(self, raw_id):
+        if not isinstance(raw_id, str):
+            return str(raw_id)
+        if ":" in raw_id:
+            return raw_id.split(":", 1)[1]
+        return raw_id
 
     def _get_dict_value(self, data, *keys, default=None):
         if not isinstance(data, dict):

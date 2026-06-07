@@ -14,6 +14,7 @@ import sys
 # 将项目根目录添加到 python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.converters.ia_to_ce import IAConverter
+from src.converters.ia_to_nexo import IAToNexoConverter
 from src.converters.nexo_to_ce import NexoConverter
 from src.converters.nexo_to_ia import NexoToIAConverter
 from src.converters.oraxen_to_ia import OraxenToIAConverter
@@ -146,6 +147,8 @@ def analyze():
                     warnings.append("检测到包中已包含 CraftEngine 配置。转换可能会覆盖或产生冲突。")
                 if "CraftEngine" not in available_targets:
                     available_targets.append("CraftEngine")
+                if "Nexo" not in available_targets:
+                    available_targets.append("Nexo")
             
             if "Nexo" in detected_formats:
                 if "CraftEngine" in detected_formats:
@@ -253,7 +256,9 @@ def convert():
         if target_format == "Nexo":
             if source_format == "CraftEngine":
                 return _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
-            return jsonify({'error': '目前仅支持 CraftEngine -> Nexo'}), 400
+            if source_format == "ItemsAdder" or not source_format:
+                return _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
+            return jsonify({'error': '目前仅支持 CraftEngine/ItemsAdder -> Nexo'}), 400
         
         return jsonify({'error': f'不支持的目标格式: {target_format}'}), 400
 
@@ -861,6 +866,158 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format)
 
+def _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ia_items_configs = []
+    ia_categories_configs = []
+    ia_recipes_configs = []
+    ia_resourcepack_path = None
+
+    scan_root = extract_dir
+    found_ia_dir = False
+    for root, dirs, _ in os.walk(extract_dir):
+        for d in dirs:
+            if d.lower() == "itemsadder":
+                scan_root = os.path.join(root, d)
+                found_ia_dir = True
+                break
+        if found_ia_dir:
+            break
+
+    for root, dirs, files in os.walk(scan_root):
+        dir_lookup = {d.lower(): d for d in dirs}
+        if ia_resourcepack_path is None:
+            if "resourcepack" in dir_lookup:
+                ia_resourcepack_path = os.path.join(root, dir_lookup["resourcepack"])
+            elif "assets" in dir_lookup:
+                ia_resourcepack_path = root
+            elif "models" in dir_lookup or "textures" in dir_lookup:
+                ia_resourcepack_path = root
+
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            config_path = os.path.join(root, file_name)
+            try:
+                data = safe_load_yaml(config_path)
+            except Exception as e:
+                print(f"Error loading ItemsAdder config {config_path}: {e}")
+                continue
+            if not isinstance(data, dict):
+                continue
+            if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
+                ia_items_configs.append(config_path)
+            if "categories" in data:
+                ia_categories_configs.append(config_path)
+            if "recipes" in data:
+                ia_recipes_configs.append(config_path)
+
+    if ia_resourcepack_path is None and ia_items_configs:
+        ia_resourcepack_path = extract_dir
+
+    if not ia_items_configs:
+        return jsonify({'error': '未能找到包含物品定义的 ItemsAdder 配置文件'}), 400
+
+    merged_data = {
+        "items": {},
+        "equipments": {},
+        "armors_rendering": {},
+        "legacy_armor_renderings": {},
+        "templates": {},
+        "recipes": {},
+        "loots": {},
+        "info": {},
+    }
+
+    for config_path in ia_items_configs:
+        data = safe_load_yaml(config_path)
+        if not isinstance(data, dict):
+            continue
+        if "info" in data and not merged_data["info"]:
+            merged_data["info"] = data["info"]
+        for section_name in ("items", "equipments", "armors_rendering", "legacy_armor_renderings", "templates"):
+            section = data.get(section_name)
+            if isinstance(section, dict):
+                merged_data.setdefault(section_name, {}).update(section)
+        if isinstance(data.get("loots"), dict):
+            for loot_group, loot_group_data in data["loots"].items():
+                if isinstance(loot_group_data, dict):
+                    merged_data.setdefault("loots", {}).setdefault(loot_group, {}).update(loot_group_data)
+
+    if ia_categories_configs:
+        merged_categories = {}
+        for config_path in ia_categories_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("categories"), dict):
+                merged_categories.update(data["categories"])
+                if "info" in data and not merged_data["info"]:
+                    merged_data["info"] = data["info"]
+        if merged_categories:
+            merged_data["categories"] = merged_categories
+
+    if ia_recipes_configs:
+        merged_recipes = {}
+        for config_path in ia_recipes_configs:
+            data = safe_load_yaml(config_path)
+            if not isinstance(data, dict):
+                continue
+            if "info" in data and not merged_data["info"]:
+                merged_data["info"] = data["info"]
+            recipes = data.get("recipes")
+            if not isinstance(recipes, dict):
+                continue
+            for group_key, group_data in recipes.items():
+                if isinstance(group_data, dict):
+                    merged_recipes.setdefault(group_key, {}).update(group_data)
+        if merged_recipes:
+            merged_data["recipes"] = merged_recipes
+
+    original_namespace = "converted"
+    if isinstance(merged_data.get("info"), dict):
+        original_namespace = merged_data["info"].get("namespace") or original_namespace
+    if not _is_valid_namespace(original_namespace):
+        original_namespace = "converted"
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        namespace = user_namespace
+    else:
+        namespace = original_namespace
+
+    if ia_resourcepack_path and os.path.exists(ia_resourcepack_path):
+        assets_path = os.path.join(ia_resourcepack_path, "assets")
+        if not os.path.exists(assets_path):
+            has_models = os.path.exists(os.path.join(ia_resourcepack_path, "models"))
+            has_textures = os.path.exists(os.path.join(ia_resourcepack_path, "textures"))
+            has_sounds = os.path.exists(os.path.join(ia_resourcepack_path, "sounds"))
+            if has_models or has_textures or has_sounds:
+                restructured_root = os.path.join(session_upload_dir, "restructured_ia_to_nexo_rp")
+                target_ns_dir = os.path.join(restructured_root, "assets", namespace)
+                os.makedirs(target_ns_dir, exist_ok=True)
+                for folder_name in ("models", "textures", "sounds"):
+                    src_folder = os.path.join(ia_resourcepack_path, folder_name)
+                    if not os.path.isdir(src_folder):
+                        continue
+                    dst_folder = os.path.join(target_ns_dir, folder_name)
+                    if os.path.isdir(dst_folder):
+                        shutil.rmtree(dst_folder, ignore_errors=True)
+                    shutil.copytree(src_folder, dst_folder)
+                ia_resourcepack_path = restructured_root
+
+    converter = IAToNexoConverter()
+    nexo_root = os.path.join(session_output_dir, "Nexo")
+    nexo_items_dir = os.path.join(nexo_root, "items")
+    nexo_pack_dir = os.path.join(nexo_root, "pack")
+
+    if ia_resourcepack_path:
+        converter.set_resource_paths(ia_resourcepack_path, nexo_pack_dir)
+
+    converter.convert(merged_data, namespace=namespace)
+    converter.save_config(nexo_items_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
+
 def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
     # 3. 定位配置和资源 (ItemsAdder -> CraftEngine 逻辑)
     # 改进逻辑: 扫描所有 YAML 文件并根据内容进行分类
@@ -1141,6 +1298,8 @@ def _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, t
 
 def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
     nexo_items_configs = []
+    nexo_categories_configs = []
+    nexo_recipes_configs = []
     nexo_resourcepack_path = None
     nexo_resourcepack_paths = []
 
@@ -1177,6 +1336,10 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
                 or _get_case_insensitive_dict_value(sample, "itemname", "customname") is not None
             ):
                 nexo_items_configs.append(full_path)
+            if isinstance(data.get("categories"), dict):
+                nexo_categories_configs.append(full_path)
+            if isinstance(data.get("recipes"), dict):
+                nexo_recipes_configs.append(full_path)
 
     if not nexo_items_configs:
         return jsonify({'error': '未能找到 Nexo 物品配置文件'}), 400
@@ -1192,11 +1355,19 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
     if user_namespace:
         if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
             return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
-        merged_data = {}
+        merged_data = {"items": {}, "categories": {}, "recipes": {}}
         for config_path in nexo_items_configs:
             data = safe_load_yaml(config_path)
             if isinstance(data, dict):
-                merged_data.update(data)
+                merged_data["items"].update(data)
+        for config_path in nexo_categories_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("categories"), dict):
+                merged_data["categories"].update(data["categories"])
+        for config_path in nexo_recipes_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("recipes"), dict):
+                merged_data["recipes"].update(data["recipes"])
         namespace_map = {user_namespace: merged_data}
     else:
         namespace_map = {}
@@ -1214,8 +1385,31 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
                 nexo_resourcepack_paths if nexo_resourcepack_paths else nexo_resourcepack_path
             )
             if namespace not in namespace_map:
-                namespace_map[namespace] = {}
-            namespace_map[namespace].update(data)
+                namespace_map[namespace] = {"items": {}, "categories": {}, "recipes": {}}
+            namespace_map[namespace]["items"].update(data)
+
+        fallback_namespaces = list(namespace_map.keys())
+        fallback_namespace = fallback_namespaces[0] if len(fallback_namespaces) == 1 else "converted"
+        for config_path in nexo_categories_configs:
+            data = safe_load_yaml(config_path)
+            if not isinstance(data, dict) or not isinstance(data.get("categories"), dict):
+                continue
+            namespace = fallback_namespace
+            if namespace == "converted":
+                file_name = os.path.basename(config_path)
+                namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(file_name)[0].lower()) or "converted"
+            namespace_map.setdefault(namespace, {"items": {}, "categories": {}, "recipes": {}})
+            namespace_map[namespace]["categories"].update(data["categories"])
+        for config_path in nexo_recipes_configs:
+            data = safe_load_yaml(config_path)
+            if not isinstance(data, dict) or not isinstance(data.get("recipes"), dict):
+                continue
+            namespace = fallback_namespace
+            if namespace == "converted":
+                file_name = os.path.basename(config_path)
+                namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(file_name)[0].lower()) or "converted"
+            namespace_map.setdefault(namespace, {"items": {}, "categories": {}, "recipes": {}})
+            namespace_map[namespace]["recipes"].update(data["recipes"])
 
     for namespace, merged_data in namespace_map.items():
         converter = NexoToIAConverter()
