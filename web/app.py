@@ -18,6 +18,7 @@ from src.converters.nexo_to_ce import NexoConverter
 from src.converters.nexo_to_ia import NexoToIAConverter
 from src.converters.oraxen_to_ia import OraxenToIAConverter
 from src.converters.ce_to_ia import CEToIAConverter
+from src.converters.ce_to_nexo import CEToNexoConverter
 from src.analyzer import PackageAnalyzer
 from src.utils.yaml_loader import safe_load_yaml
 
@@ -167,6 +168,10 @@ def analyze():
                     warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
                 if "ItemsAdder" not in available_targets:
                     available_targets.append("ItemsAdder")
+                if "Nexo" in detected_formats:
+                    warnings.append("检测到包中已包含 Nexo 配置。转换可能会覆盖或产生冲突。")
+                if "Nexo" not in available_targets:
+                    available_targets.append("Nexo")
 
             report["source_formats"] = detected_formats # 改名以反映复数
             report["available_targets"] = available_targets
@@ -244,6 +249,11 @@ def convert():
             if source_format == "Nexo":
                 return _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
             return jsonify({'error': '目前仅支持 CraftEngine/Oraxen/Nexo -> ItemsAdder'}), 400
+
+        if target_format == "Nexo":
+            if source_format == "CraftEngine":
+                return _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
+            return jsonify({'error': '目前仅支持 CraftEngine -> Nexo'}), 400
         
         return jsonify({'error': f'不支持的目标格式: {target_format}'}), 400
 
@@ -684,6 +694,67 @@ def _convert_ce_to_ia(extract_dir, session_output_dir, session_upload_dir, targe
         converter.save_config(ia_config_dir)
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="ItemsAdder")
+
+def _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ce_config_entries = []
+
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for dir_name in dirs:
+            if dir_name.lower() == "craftengine":
+                scan_root = os.path.join(root, dir_name)
+                break
+        if scan_root != extract_dir:
+            break
+
+    for root, _, files in os.walk(scan_root):
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            config_path = os.path.join(root, file_name)
+            try:
+                data = safe_load_yaml(config_path)
+            except Exception as e:
+                print(f"Error loading CraftEngine config {config_path}: {e}")
+                continue
+            ce_data = _merge_ce_sections(data)
+            if ce_data:
+                ce_config_entries.append((config_path, ce_data))
+
+    if not ce_config_entries:
+        return jsonify({'error': '未能找到 CraftEngine 配置文件'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        namespace_map = {user_namespace: {}}
+        for _, ce_data in ce_config_entries:
+            _merge_ce_data(namespace_map[user_namespace], ce_data)
+    else:
+        namespace_map = {}
+        for config_path, ce_data in ce_config_entries:
+            namespace = _infer_ce_namespace(ce_data, config_path)
+            namespace_map.setdefault(namespace, {})
+            _merge_ce_data(namespace_map[namespace], ce_data)
+
+    for namespace, merged_data in namespace_map.items():
+        converter = CEToNexoConverter()
+        nexo_root = os.path.join(session_output_dir, "Nexo")
+        nexo_items_dir = os.path.join(nexo_root, "items")
+        nexo_pack_dir = os.path.join(nexo_root, "pack")
+
+        ce_resourcepack_paths = _collect_ce_resourcepack_paths(
+            extract_dir,
+            namespace=None if user_namespace else namespace,
+        )
+        if ce_resourcepack_paths:
+            converter.set_resource_paths(ce_resourcepack_paths, nexo_pack_dir)
+
+        converter.convert(merged_data, namespace=namespace)
+        converter.save_config(nexo_items_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
 
 def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
     # 1. 扫描 Nexo 配置和资源

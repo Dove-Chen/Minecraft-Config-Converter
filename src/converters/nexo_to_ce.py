@@ -329,10 +329,24 @@ class NexoConverter(BaseConverter):
             if ce_lore:
                 ce_item["data"]["lore"] = ce_lore
         
-        if "model" in data:
-             ce_item["custom-model-data"] = data.get("model")
-
         pack = self._get_pack_data(data)
+        custom_model_data = self._get_dict_value(
+            data,
+            "model",
+            "custom_model_data",
+            "custom-model-data",
+            default=None,
+        )
+        if custom_model_data is None:
+            custom_model_data = self._get_dict_value(
+                pack,
+                "custom_model_data",
+                "custom-model-data",
+                default=None,
+            )
+        if custom_model_data is not None:
+             ce_item["custom-model-data"] = custom_model_data
+
         mechanics = self._get_mechanics_data(data)
         
         # 确定物品类型并处理特定逻辑
@@ -791,12 +805,41 @@ class NexoConverter(BaseConverter):
             self.ce_config["templates"][template_id] = template
 
     def _handle_generic_model(self, ce_item, pack):
-        model_path = pack.get("model")
+        model_path = self._get_dict_value(pack, "model", default=None)
         if model_path:
             ce_item["model"] = {
                 "type": "minecraft:model",
                 "path": self._get_model_ref(model_path)
             }
+            return
+
+        textures = self._extract_pack_textures(pack)
+        if textures:
+            ce_item["textures"] = textures
+
+    def _extract_pack_textures(self, pack):
+        texture_values = []
+        texture = self._get_dict_value(pack, "texture", default=None)
+        textures = self._get_dict_value(pack, "textures", default=None)
+        if isinstance(texture, str) and texture.strip():
+            texture_values.append(texture)
+        elif isinstance(texture, dict):
+            texture_values.extend(value for value in texture.values() if isinstance(value, str))
+        if isinstance(textures, str) and textures.strip():
+            texture_values.append(textures)
+        elif isinstance(textures, list):
+            texture_values.extend(value for value in textures if isinstance(value, str))
+        elif isinstance(textures, dict):
+            texture_values.extend(value for value in textures.values() if isinstance(value, str))
+
+        normalized = []
+        seen = set()
+        for value in texture_values:
+            texture_path = self._normalize_armor_item_texture(value)
+            if texture_path and texture_path not in seen:
+                seen.add(texture_path)
+                normalized.append(texture_path)
+        return normalized
 
     def _get_model_ref(self, path):
         # 将 nexo 路径转换为 CE 引用

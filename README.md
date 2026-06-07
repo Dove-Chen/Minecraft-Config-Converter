@@ -10,6 +10,6 @@ MCC（Minecraft Config Converter） 是一个用于分析和转换 Minecraft 服
 | 插件       | ItemsAdder | CraftEngine | Nexo | Oraxen |
 |------------|------------|-------------|------|------|
 | ItemsAdder |      -     | ✔️   | 适配中 | 适配中|
-| CraftEngine| 适配中| - | 适配中 | 适配中|
+| CraftEngine| 适配中| - | ✔️ | 适配中|
 | Nexo       | ✔️ |✔️ | - | 适配中|
 | Oraxen     | ✔️ |适配中 | 适配中 | -|
