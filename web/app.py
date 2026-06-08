@@ -500,6 +500,30 @@ def _merge_nexo_resourcepacks(resourcepack_paths, merged_root):
                 shutil.copy2(src_file, dst_file)
     return merged_root
 
+def _merge_nexo_config_data(target, data):
+    if not isinstance(target, dict) or not isinstance(data, dict):
+        return target
+
+    section_names = {"items", "categories", "recipes"}
+    for key, value in data.items():
+        normalized_key = key.lower() if isinstance(key, str) else key
+        if normalized_key in section_names and isinstance(value, dict):
+            target_key = None
+            for existing_key in target.keys():
+                if isinstance(existing_key, str) and existing_key.lower() == normalized_key:
+                    target_key = existing_key
+                    break
+            if target_key is None:
+                target_key = normalized_key
+                target[target_key] = {}
+            if isinstance(target.get(target_key), dict):
+                target[target_key].update(value)
+            else:
+                target[target_key] = dict(value)
+            continue
+        target[key] = value
+    return target
+
 
 def _extract_oraxen_namespace_from_value(value):
     if not isinstance(value, str) or not value.strip():
@@ -1058,7 +1082,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
         for config_path in nexo_items_configs:
             data = safe_load_yaml(config_path)
             if isinstance(data, dict):
-                 merged_data.update(data)
+                 _merge_nexo_config_data(merged_data, data)
         
         namespace = user_namespace
         ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
@@ -1088,7 +1112,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
             )
             if namespace not in grouped_data:
                 grouped_data[namespace] = {}
-            grouped_data[namespace].update(data)
+            _merge_nexo_config_data(grouped_data[namespace], data)
 
         for namespace, merged_data in grouped_data.items():
             converter = NexoConverter()

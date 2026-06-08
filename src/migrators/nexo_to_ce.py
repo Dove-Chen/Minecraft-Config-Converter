@@ -56,6 +56,7 @@ class NexoMigrator(BaseMigrator):
         print(f"Starting migration from {self.input_path} to {self.output_path}")
         self._migrate_textures()
         self._migrate_models()
+        self._migrate_sounds()
         print("Migration complete.")
 
     def _get_resource_dir(self, resource_type, namespace=None):
@@ -197,6 +198,47 @@ class NexoMigrator(BaseMigrator):
                         dest_file = os.path.join(dest_dir, file)
                         
                         self._process_model_file(src_file, dest_file, source_ns=ns)
+
+    def _migrate_sounds(self):
+        for ns in self.source_namespaces:
+            src_dirs = []
+            candidates = [
+                os.path.join(self.input_path, "assets", ns, "sounds"),
+                os.path.join(self.input_path, "assets", "minecraft", "sounds", ns),
+                os.path.join(self.input_path, ns, "sounds"),
+            ]
+            if ns == self.namespace:
+                candidates.append(os.path.join(self.input_path, "sounds"))
+
+            for candidate in candidates:
+                if os.path.isdir(candidate) and candidate not in src_dirs:
+                    src_dirs.append(candidate)
+
+            for src_dir in src_dirs:
+                for root, _, files in os.walk(src_dir):
+                    for file in files:
+                        if not file.lower().endswith((".ogg", ".wav", ".json", ".mcmeta")):
+                            continue
+                        rel_path = os.path.relpath(root, src_dir)
+                        dest_rel = os.path.join(rel_path, file)
+                        if ns != self.namespace:
+                            dest_rel = os.path.join(ns, dest_rel)
+                        dest_dir = os.path.join(self.output_path, "assets", self.namespace, "sounds", os.path.dirname(dest_rel))
+                        os.makedirs(dest_dir, exist_ok=True)
+                        src_file = os.path.join(root, file)
+                        shutil.copy2(src_file, os.path.join(self.output_path, "assets", self.namespace, "sounds", dest_rel))
+
+            sounds_json_candidates = [
+                os.path.join(self.input_path, "assets", ns, "sounds.json"),
+                os.path.join(self.input_path, ns, "sounds.json"),
+            ]
+            for sounds_json in sounds_json_candidates:
+                if not os.path.isfile(sounds_json):
+                    continue
+                dest_name = "sounds.json" if ns == self.namespace else f"{ns}_sounds.json"
+                dest_dir = os.path.join(self.output_path, "assets", self.namespace)
+                os.makedirs(dest_dir, exist_ok=True)
+                shutil.copy2(sounds_json, os.path.join(dest_dir, dest_name))
 
     def _process_model_file(self, src_file, dest_file, source_ns=None):
         try:

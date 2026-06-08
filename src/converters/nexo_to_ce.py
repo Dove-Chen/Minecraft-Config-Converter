@@ -91,13 +91,34 @@ class NexoConverter(BaseConverter):
     def convert(self, nexo_data, namespace=None):
         if namespace:
             self.namespace = namespace
+        self.ce_config = {
+            "items": {},
+            "equipments": {},
+            "templates": {},
+            "categories": {},
+            "recipes": {}
+        }
+        self.generated_models = {}
+        self.armor_humanoid_keys = set()
+        self.armor_leggings_keys = set()
+        self.source_namespaces = set()
+        if not isinstance(nexo_data, dict):
+            return self.ce_config
         
         # Nexo 结构通常是根目录下的扁平物品键，或者是嵌套的。
         # 但通常 Nexo 物品只是文件中的键。
         # 我们需要区分物品和其他可能的键（如果有）。
         # 然而，查看示例，文件似乎就是物品列表。
         
-        self._convert_items(nexo_data)
+        wrapped_items = self._get_dict_value(nexo_data, "items", "Items", default=None)
+        if isinstance(wrapped_items, dict):
+            self._convert_items(wrapped_items)
+            self._convert_items(nexo_data)
+        else:
+            self._convert_items(nexo_data)
+
+        self._convert_categories(self._get_dict_value(nexo_data, "categories", "Categories", default={}))
+        self._convert_recipes(self._get_dict_value(nexo_data, "recipes", "Recipes", default={}))
         
         # 如果需要，自动生成分类
         if not self.ce_config["categories"] and self.ce_config["items"]:
@@ -135,13 +156,70 @@ class NexoConverter(BaseConverter):
         lowered = {}
         for k, v in data.items():
             if isinstance(k, str):
-                lowered[k.lower()] = v
+                lowered[k.lower().replace("-", "_")] = v
         for key in keys:
             if isinstance(key, str):
-                v = lowered.get(key.lower())
+                v = lowered.get(key.lower().replace("-", "_"))
                 if v is not None:
                     return v
         return default
+
+    def _local_id(self, raw_id):
+        if not isinstance(raw_id, str):
+            return str(raw_id)
+        if ":" in raw_id:
+            return raw_id.split(":", 1)[1]
+        return raw_id
+
+    def _normalize_namespaced_id(self, raw_id, fallback="entry"):
+        local_id = self._local_id(raw_id)
+        local_id = re.sub(r"[^0-9a-z_.-]", "_", str(local_id).lower()).strip("_")
+        if not local_id:
+            local_id = fallback
+        return f"{self.namespace}:{local_id}"
+
+    def _normalize_item_ref(self, value, keep_tag_namespace=True):
+        if not isinstance(value, str) or not value.strip():
+            return value
+        ref = value.strip()
+        if ref.startswith("#"):
+            tag = ref[1:]
+            if ":" in tag:
+                ns, item_id = tag.split(":", 1)
+                if ns == "minecraft":
+                    return f"#minecraft:{item_id.lower()}"
+                return f"#{self.namespace}:{item_id}"
+            return f"#{self.namespace}:{tag}" if keep_tag_namespace else ref
+        if ref.startswith("minecraft:"):
+            ns, item_id = ref.split(":", 1)
+            return f"{ns}:{item_id.lower()}"
+        if ":" in ref:
+            _, item_id = ref.split(":", 1)
+            return f"{self.namespace}:{item_id}"
+        return f"{self.namespace}:{ref}"
+
+    def _looks_like_custom_item(self, value):
+        if not isinstance(value, str):
+            return False
+        ref = value.strip()
+        if not ref or ref.startswith("#") or ref.startswith("minecraft:"):
+            return False
+        if ":" in ref:
+            return True
+        return f"{self.namespace}:{ref.lower()}" in self.ce_config["items"]
+
+    def _normalize_recipe_id(self, raw_id):
+        if not raw_id:
+            return None
+        if isinstance(raw_id, str) and ":" in raw_id:
+            ns, item_id = raw_id.split(":", 1)
+            if ns == "minecraft":
+                return f"minecraft:{item_id.lower()}"
+            return f"{self.namespace}:{item_id}"
+        local_id = re.sub(r"[^0-9a-z_.-]", "_", str(raw_id).lower()).strip("_")
+        if not local_id:
+            return None
+        return f"{self.namespace}:{local_id}"
 
     def _get_pack_data(self, data):
         pack = self._get_dict_value(data, "Pack", "pack", default={})
@@ -282,7 +360,12 @@ class NexoConverter(BaseConverter):
         seen_item_keys = set()
 
         def make_item_key(parts):
-            raw_key = "_".join(str(part) for part in parts if str(part).strip())
+            cleaned_parts = []
+            for part in parts:
+                text = str(part).strip()
+                if text:
+                    cleaned_parts.append(self._local_id(text))
+            raw_key = "_".join(cleaned_parts)
             item_key = re.sub(r"[^0-9a-z_.-]", "_", raw_key.lower()).strip("_")
             if not item_key:
                 item_key = "item"
@@ -300,9 +383,11 @@ class NexoConverter(BaseConverter):
             for key, value in data.items():
                 if not isinstance(value, dict):
                     continue
+                if not prefix_parts and str(key).lower() in {"items", "categories", "recipes"}:
+                    continue
                 
                 # 检查是否为物品
-                if "material" in value or "itemname" in value or "customname" in value:
+                if self._is_nexo_item_data(value):
                     self._convert_item(make_item_key(prefix_parts + [key]), value)
                 else:
                     # 递归
@@ -310,10 +395,35 @@ class NexoConverter(BaseConverter):
 
         recurse(items_data)
 
+    def _is_nexo_item_data(self, value):
+        if not isinstance(value, dict):
+            return False
+        item_markers = (
+            "material",
+            "itemname",
+            "customname",
+            "lore",
+            "Pack",
+            "pack",
+            "Mechanics",
+            "mechanics",
+            "Components",
+            "components",
+            "model",
+            "custom_model_data",
+            "custom-model-data",
+            "AttributeModifiers",
+            "attribute_modifiers",
+            "permission",
+            "enchants",
+            "enchantments",
+        )
+        return any(self._get_dict_value(value, marker, default=None) is not None for marker in item_markers)
+
     def _convert_item(self, key, data):
         ce_id = f"{self.namespace}:{key}"
         
-        material = data.get("material", "STONE")
+        material = self._get_dict_value(data, "material", default="STONE")
         item_name = self._get_dict_value(data, "itemname", "customname", default=key)
         
         ce_item = {
@@ -323,7 +433,7 @@ class NexoConverter(BaseConverter):
             }
         }
         
-        lore_value = data.get("lore")
+        lore_value = self._get_dict_value(data, "lore", default=None)
         if lore_value:
             ce_lore = self._normalize_lore(lore_value)
             if ce_lore:
@@ -366,6 +476,383 @@ class NexoConverter(BaseConverter):
 
         self.ce_config["items"][ce_id] = ce_item
 
+    def _convert_categories(self, categories_data):
+        if not isinstance(categories_data, dict):
+            return
+        for raw_id, category_data in categories_data.items():
+            if not isinstance(category_data, dict):
+                continue
+
+            ce_category_id = self._normalize_namespaced_id(raw_id, fallback="category")
+            raw_items = self._get_dict_value(category_data, "items", "list", default=[])
+            ce_items = []
+            if isinstance(raw_items, str):
+                raw_items = [raw_items]
+            if isinstance(raw_items, list):
+                for item in raw_items:
+                    if not isinstance(item, str):
+                        continue
+                    normalized = self._normalize_item_ref(item)
+                    if normalized not in ce_items:
+                        ce_items.append(normalized)
+
+            icon = self._get_dict_value(category_data, "icon", default=ce_items[0] if ce_items else "minecraft:stone")
+            icon = self._normalize_item_ref(icon) if isinstance(icon, str) else "minecraft:stone"
+            hidden_value = self._get_dict_value(category_data, "hidden", default=None)
+            enabled_value = self._get_dict_value(category_data, "enabled", default=None)
+            if hidden_value is not None:
+                hidden = self._to_bool(hidden_value, default=False)
+            elif enabled_value is not None:
+                hidden = not self._to_bool(enabled_value, default=True)
+            else:
+                hidden = False
+
+            ce_category = {
+                "name": self._format_display_name(
+                    self._get_dict_value(category_data, "name", "display_name", "display-name", default=self._local_id(raw_id))
+                ),
+                "priority": self._get_dict_value(category_data, "priority", default=1),
+                "icon": icon,
+                "list": ce_items,
+                "hidden": hidden
+            }
+
+            lore = self._normalize_lore(self._get_dict_value(category_data, "lore", default=None))
+            if lore:
+                ce_category["lore"] = lore
+
+            conditions = self._get_dict_value(category_data, "conditions", default=None)
+            if isinstance(conditions, list):
+                ce_category["conditions"] = conditions
+
+            permission = self._get_dict_value(category_data, "permission", default=None)
+            if isinstance(permission, str) and permission.strip():
+                ce_category.setdefault("conditions", []).append({
+                    "type": "permission",
+                    "permission": permission.strip()
+                })
+
+            self.ce_config["categories"][ce_category_id] = ce_category
+
+    def _convert_recipes(self, recipes_data):
+        if not isinstance(recipes_data, dict):
+            return
+        for group_key, group_data in recipes_data.items():
+            if not isinstance(group_data, dict):
+                continue
+
+            if self._is_recipe_group(group_key, group_data):
+                for recipe_key, recipe_data in group_data.items():
+                    if not isinstance(recipe_data, dict):
+                        continue
+                    self._add_recipe_variants(group_key, recipe_key, recipe_data)
+            else:
+                self._add_recipe_variants(None, group_key, group_data)
+
+    def _is_recipe_group(self, group_key, group_data):
+        group = str(group_key).lower()
+        groups = {
+            "crafting_table",
+            "crafting",
+            "shapeless",
+            "shapeless_crafting",
+            "cooking",
+            "furnace",
+            "smelting",
+            "blast_furnace",
+            "blasting",
+            "smoker",
+            "smoking",
+            "campfire",
+            "campfire_cooking",
+            "stonecutting",
+            "smithing",
+            "smithing_transform",
+            "brewing",
+        }
+        if group not in groups:
+            return False
+        recipe_keys = {
+            "type",
+            "pattern",
+            "ingredients",
+            "ingredient",
+            "result",
+            "template",
+            "template-type",
+            "base",
+            "addition",
+            "time",
+            "experience",
+            "exp",
+            "cook_time",
+            "machines",
+            "shapeless",
+        }
+        return not any(self._get_dict_value(group_data, key, default=None) is not None for key in recipe_keys)
+
+    def _add_recipe_variants(self, group_key, recipe_key, recipe_data):
+        for ce_recipe_id, ce_type, variant_data in self._iter_recipe_variants(group_key, recipe_key, recipe_data):
+            if not ce_recipe_id:
+                continue
+            ce_recipe = self._build_ce_recipe(ce_type, variant_data)
+            if ce_recipe:
+                self.ce_config["recipes"][ce_recipe_id] = ce_recipe
+
+    def _iter_recipe_variants(self, group_key, recipe_key, recipe_data):
+        ce_type = self._map_recipe_type(group_key, recipe_data)
+        if ce_type is None:
+            return
+
+        machine_types = self._map_cooking_machines(self._get_dict_value(recipe_data, "machines", default=None))
+        if group_key and str(group_key).lower() == "cooking" and machine_types:
+            for machine_type in machine_types:
+                yield self._normalize_recipe_id(f"{recipe_key}_{machine_type}"), machine_type, recipe_data
+            return
+
+        if ce_type == "shaped":
+            patterns = self._extract_recipe_patterns(recipe_data)
+            if len(patterns) > 1:
+                for suffix, pattern in patterns:
+                    variant_data = dict(recipe_data)
+                    variant_data["pattern"] = pattern
+                    variant_key = recipe_key if not suffix else f"{recipe_key}_{suffix}"
+                    yield self._normalize_recipe_id(variant_key), ce_type, variant_data
+                return
+
+        yield self._normalize_recipe_id(recipe_key), ce_type, recipe_data
+
+    def _build_ce_recipe(self, ce_type, recipe_data):
+        ce_recipe = {}
+        if ce_type:
+            ce_recipe["type"] = ce_type
+
+        if ce_type == "shaped":
+            pattern = self._get_dict_value(recipe_data, "pattern", default=None)
+            ingredients = self._get_dict_value(recipe_data, "ingredients", default={})
+            if pattern:
+                ce_recipe["pattern"] = self._normalize_pattern(pattern, ingredients)
+            if isinstance(ingredients, dict) and ingredients:
+                ce_recipe["ingredients"] = {
+                    key: self._normalize_recipe_item(value) for key, value in ingredients.items()
+                }
+        elif ce_type == "shapeless":
+            ingredients = self._get_dict_value(recipe_data, "ingredients", "ingredient", default=[])
+            ce_recipe["ingredients"] = self._normalize_shapeless_ingredients(ingredients)
+        elif ce_type in ["smelting", "blasting", "smoking", "campfire_cooking"]:
+            ingredient = self._get_dict_value(recipe_data, "ingredient", "ingredients", default=None)
+            if isinstance(ingredient, list):
+                ingredient = ingredient[0] if ingredient else None
+            if ingredient is not None:
+                ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
+            experience = self._get_dict_value(recipe_data, "experience", "exp", default=None)
+            if experience is not None:
+                ce_recipe["experience"] = experience
+            time_val = self._get_dict_value(recipe_data, "time", "cook_time", "cookingTime", default=None)
+            if time_val is not None:
+                ce_recipe["time"] = time_val
+            category = self._get_dict_value(recipe_data, "category", default=None)
+            if category:
+                ce_recipe["category"] = category
+            group_val = self._get_dict_value(recipe_data, "group", default=None)
+            if group_val:
+                ce_recipe["group"] = group_val
+        elif ce_type == "stonecutting":
+            ingredient = self._get_dict_value(recipe_data, "ingredient", "ingredients", default=None)
+            if isinstance(ingredient, list):
+                ingredient = ingredient[0] if ingredient else None
+            if ingredient is not None:
+                ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
+            group_val = self._get_dict_value(recipe_data, "group", default=None)
+            if group_val:
+                ce_recipe["group"] = group_val
+        elif ce_type == "smithing_transform":
+            template = self._get_dict_value(recipe_data, "template", "template-type", default=None)
+            base = self._get_dict_value(recipe_data, "base", default=None)
+            addition = self._get_dict_value(recipe_data, "addition", default=None)
+            if template:
+                ce_recipe["template-type"] = self._normalize_recipe_item(template)
+            if base:
+                ce_recipe["base"] = self._normalize_recipe_item(base)
+            if addition:
+                ce_recipe["addition"] = self._normalize_recipe_item(addition)
+            merge_components = self._get_dict_value(recipe_data, "merge-components", "merge_components", default=None)
+            if merge_components is not None:
+                ce_recipe["merge-components"] = merge_components
+        elif ce_type == "brewing":
+            ingredient = self._get_dict_value(recipe_data, "ingredient", default=None)
+            container = self._get_dict_value(recipe_data, "container", default=None)
+            if ingredient:
+                ce_recipe["ingredient"] = self._normalize_recipe_item(ingredient)
+            if container:
+                ce_recipe["container"] = self._normalize_recipe_item(container)
+
+        result = self._get_dict_value(recipe_data, "result", default=None)
+        if result is not None:
+            result_id = None
+            result_count = None
+            if isinstance(result, dict):
+                result_id = self._get_dict_value(result, "item", "id", default=None)
+                result_count = self._get_dict_value(result, "amount", "count", default=None)
+            else:
+                result_id = result
+            if result_id is not None:
+                ce_result = {"id": self._normalize_recipe_item(result_id)}
+                ce_result["count"] = 1 if result_count is None else result_count
+                ce_recipe["result"] = ce_result
+
+        return ce_recipe
+
+    def _normalize_recipe_item(self, value):
+        if value is None:
+            return value
+        if isinstance(value, dict):
+            item_id = self._get_dict_value(value, "item", "id", default=None)
+            if item_id is None:
+                return None
+            return self._normalize_recipe_item(item_id)
+        if isinstance(value, str):
+            item = value.strip()
+            if not item:
+                return item
+            if item.startswith("#"):
+                tag = item[1:]
+                if ":" in tag:
+                    ns, path = tag.split(":", 1)
+                    if ns == "minecraft":
+                        return f"#minecraft:{path.lower()}"
+                    return f"#{self.namespace}:{path}"
+                return f"#minecraft:{tag.lower()}"
+            if ":" in item:
+                ns, path = item.split(":", 1)
+                if ns == "minecraft":
+                    return f"minecraft:{path.lower()}"
+                return f"{self.namespace}:{path}"
+            if self._looks_like_custom_item(item):
+                return f"{self.namespace}:{item.lower()}"
+            return f"minecraft:{item.lower()}"
+        return value
+
+    def _normalize_pattern(self, pattern, ingredients):
+        if not isinstance(pattern, list):
+            return pattern
+        keys = set(ingredients.keys()) if isinstance(ingredients, dict) else set()
+        normalized = []
+        for row in pattern:
+            row_str = str(row)
+            if not keys:
+                normalized.append(row_str)
+                continue
+            normalized.append("".join(ch if ch in keys else " " for ch in row_str))
+        return normalized
+
+    def _normalize_shapeless_ingredients(self, ingredients):
+        if isinstance(ingredients, list):
+            normalized = []
+            for item in ingredients:
+                if isinstance(item, list):
+                    normalized.append([self._normalize_recipe_item(value) for value in item])
+                else:
+                    normalized.append(self._normalize_recipe_item(item))
+            return normalized
+        if isinstance(ingredients, dict):
+            return [self._normalize_recipe_item(value) for value in ingredients.values()]
+        if ingredients is None:
+            return []
+        return [self._normalize_recipe_item(ingredients)]
+
+    def _extract_recipe_patterns(self, recipe_data):
+        patterns = []
+        base_pattern = self._get_dict_value(recipe_data, "pattern", default=None)
+        if base_pattern:
+            patterns.append(("", base_pattern))
+
+        indexed_patterns = []
+        for key, value in recipe_data.items():
+            if not isinstance(key, str) or not key.startswith("pattern_"):
+                continue
+            suffix = key[len("pattern_"):]
+            if suffix:
+                indexed_patterns.append((suffix, value))
+        indexed_patterns.sort(key=lambda item: (not item[0].isdigit(), int(item[0]) if item[0].isdigit() else item[0]))
+        patterns.extend(indexed_patterns)
+        return patterns
+
+    def _map_cooking_machines(self, machines):
+        if machines is None:
+            return []
+        if isinstance(machines, str):
+            raw_machines = [machines]
+        elif isinstance(machines, list):
+            raw_machines = machines
+        else:
+            return []
+
+        mapping = {
+            "furnace": "smelting",
+            "smelting": "smelting",
+            "blast_furnace": "blasting",
+            "blast-furnace": "blasting",
+            "blasting": "blasting",
+            "smoker": "smoking",
+            "smoking": "smoking",
+            "campfire": "campfire_cooking",
+            "campfire_cooking": "campfire_cooking",
+            "campfire-cooking": "campfire_cooking",
+        }
+        result = []
+        for machine in raw_machines:
+            key = str(machine).strip().lower()
+            ce_type = mapping.get(key)
+            if ce_type and ce_type not in result:
+                result.append(ce_type)
+        return result
+
+    def _map_recipe_type(self, group_key, recipe_data):
+        explicit_type = self._get_dict_value(recipe_data, "type", default=None)
+        if explicit_type:
+            group = str(explicit_type).lower()
+        else:
+            group = str(group_key).lower() if group_key else ""
+
+        if self._get_dict_value(recipe_data, "shapeless", default=False) is True:
+            return "shapeless"
+
+        machine_types = self._map_cooking_machines(self._get_dict_value(recipe_data, "machines", default=None))
+        if group == "cooking" and machine_types:
+            return machine_types[0]
+
+        mapping = {
+            "crafting": "shaped",
+            "crafting_table": "shaped",
+            "shaped": "shaped",
+            "shapeless": "shapeless",
+            "shapeless_crafting": "shapeless",
+            "furnace": "smelting",
+            "smelting": "smelting",
+            "blast_furnace": "blasting",
+            "blasting": "blasting",
+            "smoker": "smoking",
+            "smoking": "smoking",
+            "campfire": "campfire_cooking",
+            "campfire_cooking": "campfire_cooking",
+            "cooking": "smelting",
+            "stonecutting": "stonecutting",
+            "smithing": "smithing_transform",
+            "smithing_transform": "smithing_transform",
+            "brewing": "brewing",
+        }
+        if group in mapping:
+            return mapping[group]
+        if self._get_dict_value(recipe_data, "pattern", default=None) is not None:
+            return "shaped"
+        ingredients = self._get_dict_value(recipe_data, "ingredients", default=None)
+        if isinstance(ingredients, list):
+            return "shapeless"
+        if self._get_dict_value(recipe_data, "result", default=None) is not None:
+            return "shaped"
+        return None
+
     def _format_display_name(self, display_name):
 
         if not display_name:
@@ -382,6 +869,7 @@ class NexoConverter(BaseConverter):
 
     def _is_armor(self, material):
         suffixes = ["_HELMET", "_CHESTPLATE", "_LEGGINGS", "_BOOTS"]
+        material = str(material).upper()
         return any(material.endswith(s) for s in suffixes)
 
     def _handle_armor(self, ce_item, item_key, nexo_data, pack=None):
@@ -390,7 +878,7 @@ class NexoConverter(BaseConverter):
         custom_armor = self._get_custom_armor_data(pack)
         
         slot = "head"
-        material = ce_item["material"]
+        material = str(ce_item["material"]).upper()
         if material.endswith("_CHESTPLATE"): slot = "chest"
         elif material.endswith("_LEGGINGS"): slot = "legs"
         elif material.endswith("_BOOTS"): slot = "feet"
@@ -444,7 +932,7 @@ class NexoConverter(BaseConverter):
         hitbox_config = furniture.get("hitbox", {})
         limited_placing = furniture.get("limited_placing", {})
         pack = self._get_pack_data(nexo_data)
-        model_path = pack.get("model")
+        model_path = self._get_dict_value(pack, "model", default=None)
         translation_y = self._calculate_model_y_translation(model_path)
 
         ce_item["behavior"] = {
@@ -697,7 +1185,8 @@ class NexoConverter(BaseConverter):
         return block_config
 
     def _handle_complex_item(self, ce_item, key, nexo_data, material):
-        pack = nexo_data.get("Pack", {})
+        pack = self._get_pack_data(nexo_data)
+        material = str(material).upper()
         
         template_id = f"models:{self.namespace}_{key}_model"
         ce_item["model"] = {
@@ -708,7 +1197,7 @@ class NexoConverter(BaseConverter):
         args = ce_item["model"]["arguments"]
         
         # 基础模型
-        base_model = pack.get("model")
+        base_model = self._get_dict_value(pack, "model", default=None)
         if base_model:
             args["model"] = self._get_model_ref(base_model)
             # 一些模板使用特定名称
@@ -718,27 +1207,31 @@ class NexoConverter(BaseConverter):
         
         # 变体
         if material == "BOW":
-            pulling = pack.get("pulling_models", [])
+            pulling = self._get_dict_value(pack, "pulling_models", "pulling-models", default=[])
+            if not isinstance(pulling, list):
+                pulling = []
             for i, m in enumerate(pulling):
                 args[f"bow_pulling_{i}_model"] = self._get_model_ref(m)
         
         elif material == "CROSSBOW":
-            pulling = pack.get("pulling_models", [])
+            pulling = self._get_dict_value(pack, "pulling_models", "pulling-models", default=[])
+            if not isinstance(pulling, list):
+                pulling = []
             for i, m in enumerate(pulling):
                 args[f"pulling_{i}_model"] = self._get_model_ref(m)
             
-            charged = pack.get("charged_model")
+            charged = self._get_dict_value(pack, "charged_model", "charged-model", default=None)
             if charged: args["arrow_model"] = self._get_model_ref(charged)
             
-            firework = pack.get("firework_model")
+            firework = self._get_dict_value(pack, "firework_model", "firework-model", default=None)
             if firework: args["firework_model"] = self._get_model_ref(firework)
             
         elif material == "SHIELD":
-            blocking = pack.get("blocking_model")
+            blocking = self._get_dict_value(pack, "blocking_model", "blocking-model", default=None)
             if blocking: args["shield_blocking_model"] = self._get_model_ref(blocking)
             
         elif material == "FISHING_ROD":
-            cast = pack.get("cast_model")
+            cast = self._get_dict_value(pack, "cast_model", "cast-model", default=None)
             if cast: args["cast_path"] = self._get_model_ref(cast)
 
         # 生成模板定义
@@ -877,7 +1370,7 @@ class NexoConverter(BaseConverter):
         return f"{self.namespace}:{p}"
 
     def _is_complex_item(self, material):
-        return material in ["BOW", "CROSSBOW", "FISHING_ROD", "SHIELD"]
+        return str(material).upper() in ["BOW", "CROSSBOW", "FISHING_ROD", "SHIELD"]
 
     def _register_equipment_texture(self, raw_path, is_leggings=False):
         key = self._normalize_equipment_key(raw_path)
@@ -924,8 +1417,11 @@ class NexoConverter(BaseConverter):
 
     def _normalize_armor_item_texture(self, raw_path):
         path = str(raw_path)
+        source_ns = None
         if ":" in path:
-            path = path.split(":", 1)[1]
+            source_ns, path = path.split(":", 1)
+            if source_ns and source_ns != "minecraft":
+                self.source_namespaces.add(source_ns)
         path = path.replace("\\", "/").lstrip("/")
         if path.endswith(".png"):
             path = path[:-4]
@@ -933,6 +1429,13 @@ class NexoConverter(BaseConverter):
             path = path[len("textures/"):]
         if path.startswith(f"{self.namespace}/"):
             path = path[len(self.namespace) + 1:]
+        elif source_ns and source_ns not in {"minecraft", self.namespace} and not path.startswith(f"{source_ns}/"):
+            if path.startswith("item/"):
+                path = f"item/{source_ns}/{path[5:]}"
+            elif path.startswith("block/"):
+                path = f"block/{source_ns}/{path[6:]}"
+            else:
+                path = f"{source_ns}/{path}"
         if path.startswith("item/"):
             final_path = path
         else:
