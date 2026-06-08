@@ -15,11 +15,14 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.converters.ia_to_ce import IAConverter
 from src.converters.ia_to_nexo import IAToNexoConverter
+from src.converters.ia_to_oraxen import IAToOraxenConverter
 from src.converters.nexo_to_ce import NexoConverter
 from src.converters.nexo_to_ia import NexoToIAConverter
+from src.converters.nexo_to_oraxen import NexoToOraxenConverter
 from src.converters.oraxen_to_ia import OraxenToIAConverter
 from src.converters.ce_to_ia import CEToIAConverter
 from src.converters.ce_to_nexo import CEToNexoConverter
+from src.converters.ce_to_oraxen import CEToOraxenConverter
 from src.analyzer import PackageAnalyzer
 from src.utils.yaml_loader import safe_load_yaml
 
@@ -149,6 +152,8 @@ def analyze():
                     available_targets.append("CraftEngine")
                 if "Nexo" not in available_targets:
                     available_targets.append("Nexo")
+                if "Oraxen" not in available_targets:
+                    available_targets.append("Oraxen")
             
             if "Nexo" in detected_formats:
                 if "CraftEngine" in detected_formats:
@@ -159,12 +164,18 @@ def analyze():
                     warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
                 if "ItemsAdder" not in available_targets:
                     available_targets.append("ItemsAdder")
+                if "Oraxen" not in available_targets:
+                    available_targets.append("Oraxen")
 
             if "Oraxen" in detected_formats:
                 if "ItemsAdder" in detected_formats:
                     warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
                 if "ItemsAdder" not in available_targets:
                     available_targets.append("ItemsAdder")
+                if "CraftEngine" not in available_targets:
+                    available_targets.append("CraftEngine")
+                if "Nexo" not in available_targets:
+                    available_targets.append("Nexo")
                 
             if "CraftEngine" in detected_formats:
                 if "ItemsAdder" in detected_formats:
@@ -175,6 +186,8 @@ def analyze():
                     warnings.append("检测到包中已包含 Nexo 配置。转换可能会覆盖或产生冲突。")
                 if "Nexo" not in available_targets:
                     available_targets.append("Nexo")
+                if "Oraxen" not in available_targets:
+                    available_targets.append("Oraxen")
 
             report["source_formats"] = detected_formats # 改名以反映复数
             report["available_targets"] = available_targets
@@ -240,6 +253,8 @@ def convert():
         if target_format == "CraftEngine":
             if source_format == "Nexo":
                 return _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "Oraxen":
+                return _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
             else:
                 # 默认为 ItemsAdder 或显式指定
                 return _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
@@ -256,9 +271,20 @@ def convert():
         if target_format == "Nexo":
             if source_format == "CraftEngine":
                 return _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "Oraxen":
+                return _convert_oraxen_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "ItemsAdder" or not source_format:
                 return _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
             return jsonify({'error': '目前仅支持 CraftEngine/ItemsAdder -> Nexo'}), 400
+
+        if target_format == "Oraxen":
+            if source_format == "CraftEngine":
+                return _convert_ce_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "Nexo":
+                return _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "ItemsAdder" or not source_format:
+                return _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
+            return jsonify({'error': '目前仅支持 CraftEngine/Nexo/ItemsAdder -> Oraxen'}), 400
         
         return jsonify({'error': f'不支持的目标格式: {target_format}'}), 400
 
@@ -554,6 +580,218 @@ def _resolve_oraxen_namespace(oraxen_data, fallback_namespace, oraxen_pack_path)
     if pack_ns:
         return pack_ns
     return fallback_namespace
+
+def _find_oraxen_scan_root(extract_dir):
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for d in dirs:
+            if d.lower() == "oraxen":
+                return os.path.join(root, d)
+    return scan_root
+
+def _load_oraxen_package(extract_dir):
+    scan_root = _find_oraxen_scan_root(extract_dir)
+    oraxen_pack_path = None
+    item_configs = []
+    categories_configs = []
+    recipe_configs = []
+
+    for root, dirs, files in os.walk(scan_root):
+        dir_lookup = {d.lower(): d for d in dirs}
+        if oraxen_pack_path is None:
+            if "pack" in dir_lookup:
+                oraxen_pack_path = os.path.join(root, dir_lookup["pack"])
+            elif "assets" in dir_lookup:
+                oraxen_pack_path = root
+            elif "models" in dir_lookup or "textures" in dir_lookup:
+                oraxen_pack_path = root
+
+        rel_root = os.path.relpath(root, scan_root).replace("\\", "/").lower()
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            lower_name = file_name.lower()
+            if lower_name in {"settings.yml", "settings.yaml", "config.yml", "configuration.yml"}:
+                continue
+            full_path = os.path.join(root, file_name)
+            data = safe_load_yaml(full_path)
+            if not isinstance(data, dict):
+                continue
+            if isinstance(data.get("categories"), dict):
+                categories_configs.append(full_path)
+            if isinstance(data.get("recipes"), dict) or rel_root.startswith("recipes") or "/recipes" in rel_root:
+                recipe_configs.append(full_path)
+            sample = next(iter(data.values()), None)
+            if isinstance(data.get("items"), dict):
+                item_configs.append(full_path)
+            elif isinstance(sample, dict) and (
+                "Pack" in sample
+                or "pack" in sample
+                or "displayname" in sample
+                or "material" in sample
+                or "Mechanics" in sample
+                or "mechanics" in sample
+            ):
+                item_configs.append(full_path)
+
+    merged_data = {"items": {}, "categories": {}, "recipes": {}}
+    for config_path in item_configs:
+        data = safe_load_yaml(config_path)
+        if not isinstance(data, dict):
+            continue
+        if isinstance(data.get("items"), dict):
+            merged_data["items"].update(data["items"])
+        else:
+            for key, value in data.items():
+                if key in {"categories", "recipes"}:
+                    continue
+                if isinstance(value, dict):
+                    merged_data["items"][key] = value
+
+    for config_path in categories_configs:
+        data = safe_load_yaml(config_path)
+        if isinstance(data, dict) and isinstance(data.get("categories"), dict):
+            merged_data["categories"].update(data["categories"])
+
+    for config_path in recipe_configs:
+        data = safe_load_yaml(config_path)
+        if not isinstance(data, dict):
+            continue
+        if isinstance(data.get("recipes"), dict):
+            for group_key, group_data in data["recipes"].items():
+                if isinstance(group_data, dict):
+                    merged_data["recipes"].setdefault(group_key, {}).update(group_data)
+            continue
+        recipe_type = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(os.path.basename(config_path))[0].lower())
+        for recipe_id, recipe_data in data.items():
+            if isinstance(recipe_data, dict):
+                merged_data["recipes"].setdefault(recipe_type, {})[recipe_id] = recipe_data
+
+    return merged_data, oraxen_pack_path, item_configs
+
+def _resolve_oraxen_output_namespace(merged_data, item_configs, oraxen_pack_path):
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return None, jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        return user_namespace, None, None
+
+    fallback_namespace = "converted"
+    if item_configs:
+        first_file = os.path.basename(item_configs[0])
+        if first_file:
+            fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(first_file)[0].lower())
+    namespace = _resolve_oraxen_namespace(merged_data.get("items", merged_data), fallback_namespace, oraxen_pack_path)
+    if not _is_valid_namespace(namespace):
+        namespace = "converted"
+    return namespace, None, None
+
+def _load_itemsadder_package(extract_dir):
+    ia_items_configs = []
+    ia_font_image_configs = []
+    ia_categories_configs = []
+    ia_recipes_configs = []
+    ia_resourcepack_path = None
+
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for d in dirs:
+            if d.lower() == "itemsadder":
+                scan_root = os.path.join(root, d)
+                break
+        if scan_root != extract_dir:
+            break
+
+    for root, dirs, files in os.walk(scan_root):
+        dir_lookup = {d.lower(): d for d in dirs}
+        if ia_resourcepack_path is None:
+            if "resourcepack" in dir_lookup:
+                ia_resourcepack_path = os.path.join(root, dir_lookup["resourcepack"])
+            elif "assets" in dir_lookup:
+                ia_resourcepack_path = root
+            elif "models" in dir_lookup or "textures" in dir_lookup:
+                ia_resourcepack_path = root
+
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            config_path = os.path.join(root, file_name)
+            try:
+                data = safe_load_yaml(config_path)
+            except Exception as e:
+                print(f"Error loading ItemsAdder config {config_path}: {e}")
+                continue
+            if not isinstance(data, dict):
+                continue
+            if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
+                ia_items_configs.append(config_path)
+            if "font_images" in data:
+                ia_font_image_configs.append(config_path)
+            if "categories" in data:
+                ia_categories_configs.append(config_path)
+            if "recipes" in data:
+                ia_recipes_configs.append(config_path)
+
+    if ia_resourcepack_path is None and (ia_items_configs or ia_font_image_configs):
+        ia_resourcepack_path = extract_dir
+
+    merged_data = {
+        "items": {},
+        "equipments": {},
+        "armors_rendering": {},
+        "legacy_armor_renderings": {},
+        "templates": {},
+        "font_images": {},
+        "categories": {},
+        "recipes": {},
+        "loots": {},
+        "info": {},
+    }
+
+    for config_path in ia_items_configs + [p for p in ia_font_image_configs if p not in ia_items_configs]:
+        data = safe_load_yaml(config_path)
+        if not isinstance(data, dict):
+            continue
+        if "info" in data and not merged_data["info"]:
+            merged_data["info"] = data["info"]
+        for section_name in ("items", "equipments", "armors_rendering", "legacy_armor_renderings", "templates", "font_images"):
+            section = data.get(section_name)
+            if isinstance(section, dict):
+                merged_data.setdefault(section_name, {}).update(section)
+        if isinstance(data.get("loots"), dict):
+            for loot_group, loot_group_data in data["loots"].items():
+                if isinstance(loot_group_data, dict):
+                    merged_data.setdefault("loots", {}).setdefault(loot_group, {}).update(loot_group_data)
+
+    for config_path in ia_categories_configs:
+        data = safe_load_yaml(config_path)
+        if not isinstance(data, dict):
+            continue
+        if "info" in data and not merged_data["info"]:
+            merged_data["info"] = data["info"]
+        if isinstance(data.get("categories"), dict):
+            merged_data["categories"].update(data["categories"])
+
+    for config_path in ia_recipes_configs:
+        data = safe_load_yaml(config_path)
+        if not isinstance(data, dict):
+            continue
+        if "info" in data and not merged_data["info"]:
+            merged_data["info"] = data["info"]
+        recipes = data.get("recipes")
+        if not isinstance(recipes, dict):
+            continue
+        for group_key, group_data in recipes.items():
+            if isinstance(group_data, dict):
+                merged_data["recipes"].setdefault(group_key, {}).update(group_data)
+
+    original_namespace = "converted"
+    if isinstance(merged_data.get("info"), dict):
+        original_namespace = merged_data["info"].get("namespace") or original_namespace
+    if not _is_valid_namespace(original_namespace):
+        original_namespace = "converted"
+
+    return merged_data, ia_resourcepack_path, ia_items_configs, original_namespace
 
 def _get_config_section(data, section_name):
     if not isinstance(data, dict):
@@ -1247,58 +1485,283 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
     return _package_and_respond(session_output_dir, session_upload_dir, target_format)
 
 
-def _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
-    oraxen_item_configs = []
-    oraxen_pack_path = None
+def _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
+    merged_data, oraxen_pack_path, oraxen_item_configs = _load_oraxen_package(extract_dir)
+    if not oraxen_item_configs:
+        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+
+    namespace, error_response, status_code = _resolve_oraxen_output_namespace(
+        merged_data,
+        oraxen_item_configs,
+        oraxen_pack_path
+    )
+    if error_response:
+        return error_response, status_code
+
+    ia_config = OraxenToIAConverter().convert(merged_data, namespace=namespace)
+
+    converter = IAConverter()
+    ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
+    ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
+    ce_res_dir = os.path.join(ce_output_base, "resourcepack")
+
+    if oraxen_pack_path:
+        converter.set_resource_paths(oraxen_pack_path, ce_res_dir)
+
+    converter.convert(ia_config, namespace=namespace)
+    converter.save_config(ce_config_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format)
+
+
+def _convert_oraxen_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
+    merged_data, oraxen_pack_path, oraxen_item_configs = _load_oraxen_package(extract_dir)
+    if not oraxen_item_configs:
+        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+
+    namespace, error_response, status_code = _resolve_oraxen_output_namespace(
+        merged_data,
+        oraxen_item_configs,
+        oraxen_pack_path
+    )
+    if error_response:
+        return error_response, status_code
+
+    ia_config = OraxenToIAConverter().convert(merged_data, namespace=namespace)
+
+    converter = IAToNexoConverter()
+    nexo_root = os.path.join(session_output_dir, "Nexo")
+    nexo_items_dir = os.path.join(nexo_root, "items")
+    nexo_pack_dir = os.path.join(nexo_root, "pack")
+
+    if oraxen_pack_path:
+        converter.set_resource_paths(oraxen_pack_path, nexo_pack_dir)
+
+    converter.convert(ia_config, namespace=namespace)
+    converter.save_config(nexo_items_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
+
+
+def _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format):
+    merged_data, ia_resourcepack_path, ia_items_configs, original_namespace = _load_itemsadder_package(extract_dir)
+    if not ia_items_configs and not merged_data.get("font_images"):
+        return jsonify({'error': '未能找到包含物品定义的 ItemsAdder 配置文件'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        namespace = user_namespace
+    else:
+        namespace = original_namespace
+
+    converter = IAToOraxenConverter()
+    oraxen_root = os.path.join(session_output_dir, "Oraxen")
+    oraxen_pack_dir = os.path.join(oraxen_root, "pack")
+
+    if ia_resourcepack_path:
+        converter.set_resource_paths(ia_resourcepack_path, oraxen_pack_dir)
+
+    converter.convert(merged_data, namespace=namespace)
+    converter.save_config(oraxen_root)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Oraxen")
+
+
+def _convert_ce_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ce_config_entries = []
+
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for dir_name in dirs:
+            if dir_name.lower() == "craftengine":
+                scan_root = os.path.join(root, dir_name)
+                break
+        if scan_root != extract_dir:
+            break
+
+    for root, _, files in os.walk(scan_root):
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            config_path = os.path.join(root, file_name)
+            try:
+                data = safe_load_yaml(config_path)
+            except Exception as e:
+                print(f"Error loading CraftEngine config {config_path}: {e}")
+                continue
+            ce_data = _merge_ce_sections(data)
+            if ce_data:
+                ce_config_entries.append((config_path, ce_data))
+
+    if not ce_config_entries:
+        return jsonify({'error': '未能找到 CraftEngine 配置文件'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+        namespace_map = {user_namespace: {}}
+        for _, ce_data in ce_config_entries:
+            _merge_ce_data(namespace_map[user_namespace], ce_data)
+    else:
+        namespace_map = {}
+        for config_path, ce_data in ce_config_entries:
+            namespace = _infer_ce_namespace(ce_data, config_path)
+            namespace_map.setdefault(namespace, {})
+            _merge_ce_data(namespace_map[namespace], ce_data)
+
+    for namespace, merged_data in namespace_map.items():
+        converter = CEToOraxenConverter()
+        oraxen_root = os.path.join(session_output_dir, "Oraxen")
+        oraxen_pack_dir = os.path.join(oraxen_root, "pack")
+
+        ce_resourcepack_paths = _collect_ce_resourcepack_paths(
+            extract_dir,
+            namespace=None if user_namespace else namespace,
+        )
+        if ce_resourcepack_paths:
+            converter.set_resource_paths(ce_resourcepack_paths, oraxen_pack_dir)
+
+        converter.convert(merged_data, namespace=namespace)
+        converter.save_config(oraxen_root)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Oraxen")
+
+
+def _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format):
+    nexo_items_configs = []
+    nexo_categories_configs = []
+    nexo_recipes_configs = []
+    nexo_resourcepack_path = None
+    nexo_resourcepack_paths = []
 
     scan_root = extract_dir
     for root, dirs, _ in os.walk(extract_dir):
         for d in dirs:
-            if d.lower() == "oraxen":
+            if d.lower() == "nexo":
                 scan_root = os.path.join(root, d)
                 break
         if scan_root != extract_dir:
             break
 
     for root, dirs, files in os.walk(scan_root):
-        if "pack" in dirs and oraxen_pack_path is None:
-            oraxen_pack_path = os.path.join(root, "pack")
-        elif "assets" in dirs and oraxen_pack_path is None:
-            oraxen_pack_path = root
+        if nexo_resourcepack_path is None:
+            dir_lookup = {d.lower(): d for d in dirs}
+            if "pack" in dir_lookup:
+                nexo_resourcepack_path = os.path.join(root, dir_lookup["pack"])
+            elif "assets" in dir_lookup:
+                nexo_resourcepack_path = root
 
         for f in files:
             if not f.endswith((".yml", ".yaml")):
                 continue
             full_path = os.path.join(root, f)
-            if "settings" in f.lower():
+            lower_name = f.lower()
+            if lower_name in {"config.yml", "configuration.yml"}:
                 continue
             data = safe_load_yaml(full_path)
             if not isinstance(data, dict):
                 continue
             sample = next(iter(data.values()), None)
-            if isinstance(sample, dict) and ("Pack" in sample or "displayname" in sample):
-                oraxen_item_configs.append(full_path)
+            if isinstance(sample, dict) and (
+                _get_case_insensitive_dict_value(sample, "Pack", "pack") is not None
+                or _get_case_insensitive_dict_value(sample, "itemname", "customname") is not None
+            ):
+                nexo_items_configs.append(full_path)
+            if isinstance(data.get("categories"), dict):
+                nexo_categories_configs.append(full_path)
+            if isinstance(data.get("recipes"), dict):
+                nexo_recipes_configs.append(full_path)
 
-    if not oraxen_item_configs:
-        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+    if not nexo_items_configs:
+        return jsonify({'error': '未能找到 Nexo 物品配置文件'}), 400
 
-    merged_data = {}
-    for config_path in oraxen_item_configs:
-        data = safe_load_yaml(config_path)
-        if isinstance(data, dict):
-            merged_data.update(data)
+    if nexo_resourcepack_path:
+        external_extract_root = os.path.join(session_upload_dir, "_nexo_external_packs_oraxen")
+        if os.path.isdir(external_extract_root):
+            shutil.rmtree(external_extract_root, ignore_errors=True)
+        nexo_resourcepack_paths = _collect_nexo_resourcepack_paths(nexo_resourcepack_path, external_extract_root)
 
     user_namespace = request.form.get('namespace')
     if user_namespace:
-        if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
+        if not _is_valid_namespace(user_namespace):
             return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
-        namespace = user_namespace
+        namespace_map = {user_namespace: {"items": {}, "categories": {}, "recipes": {}}}
+        for config_path in nexo_items_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict):
+                namespace_map[user_namespace]["items"].update(data)
+        for config_path in nexo_categories_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("categories"), dict):
+                namespace_map[user_namespace]["categories"].update(data["categories"])
+        for config_path in nexo_recipes_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("recipes"), dict):
+                namespace_map[user_namespace]["recipes"].update(data["recipes"])
     else:
-        fallback_namespace = "converted"
-        first_file = os.path.basename(oraxen_item_configs[0])
-        if first_file:
-            fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(first_file)[0].lower())
-        namespace = _resolve_oraxen_namespace(merged_data, fallback_namespace, oraxen_pack_path)
+        namespace_map = {}
+        for config_path in nexo_items_configs:
+            data = safe_load_yaml(config_path)
+            if not isinstance(data, dict):
+                continue
+            fallback_namespace = "converted"
+            file_name = os.path.basename(config_path)
+            if file_name:
+                fallback_namespace = re.sub(r'[^0-9a-z_.-]', '_', os.path.splitext(file_name)[0].lower())
+            namespace = _resolve_nexo_namespace(
+                data,
+                fallback_namespace,
+                nexo_resourcepack_paths if nexo_resourcepack_paths else nexo_resourcepack_path
+            )
+            namespace_map.setdefault(namespace, {"items": {}, "categories": {}, "recipes": {}})
+            namespace_map[namespace]["items"].update(data)
+
+        fallback_namespaces = list(namespace_map.keys())
+        fallback_namespace = fallback_namespaces[0] if len(fallback_namespaces) == 1 else "converted"
+        for config_path in nexo_categories_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("categories"), dict):
+                namespace_map.setdefault(fallback_namespace, {"items": {}, "categories": {}, "recipes": {}})
+                namespace_map[fallback_namespace]["categories"].update(data["categories"])
+        for config_path in nexo_recipes_configs:
+            data = safe_load_yaml(config_path)
+            if isinstance(data, dict) and isinstance(data.get("recipes"), dict):
+                namespace_map.setdefault(fallback_namespace, {"items": {}, "categories": {}, "recipes": {}})
+                namespace_map[fallback_namespace]["recipes"].update(data["recipes"])
+
+    for namespace, merged_data in namespace_map.items():
+        converter = NexoToOraxenConverter()
+        oraxen_root = os.path.join(session_output_dir, "Oraxen")
+        oraxen_pack_dir = os.path.join(oraxen_root, "pack")
+
+        if nexo_resourcepack_path:
+            converter.set_resource_paths(
+                nexo_resourcepack_path,
+                oraxen_pack_dir,
+                additional_nexo_roots=nexo_resourcepack_paths[1:] if nexo_resourcepack_paths else None
+            )
+
+        converter.convert(merged_data, namespace=namespace)
+        converter.save_config(oraxen_root)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Oraxen")
+
+
+def _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
+    merged_data, oraxen_pack_path, oraxen_item_configs = _load_oraxen_package(extract_dir)
+    if not oraxen_item_configs:
+        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+
+    namespace, error_response, status_code = _resolve_oraxen_output_namespace(
+        merged_data,
+        oraxen_item_configs,
+        oraxen_pack_path
+    )
+    if error_response:
+        return error_response, status_code
 
     converter = OraxenToIAConverter()
     ia_output_base = os.path.join(session_output_dir, "ItemsAdder", "contents", namespace)
