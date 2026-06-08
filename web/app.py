@@ -570,7 +570,7 @@ def _get_config_section(data, section_name):
 
 def _merge_ce_sections(data):
     merged = {}
-    for section_name in ("items", "blocks", "equipments", "categories", "recipes", "furniture"):
+    for section_name in ("items", "blocks", "equipments", "images", "categories", "recipes", "furniture"):
         section = _get_config_section(data, section_name)
         if section:
             merged[section_name] = section
@@ -603,7 +603,7 @@ def _infer_ce_namespace_from_path(config_path):
 
 def _infer_ce_namespace(ce_data, config_path):
     scores = {}
-    for section_name in ("items", "blocks", "equipments", "categories", "recipes", "furniture"):
+    for section_name in ("items", "blocks", "equipments", "images", "categories", "recipes", "furniture"):
         section = ce_data.get(section_name)
         if not isinstance(section, dict):
             continue
@@ -1022,6 +1022,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
     # 3. 定位配置和资源 (ItemsAdder -> CraftEngine 逻辑)
     # 改进逻辑: 扫描所有 YAML 文件并根据内容进行分类
     ia_items_configs = []
+    ia_font_image_configs = []
     ia_categories_configs = []
     ia_recipes_configs = []
     ia_resourcepack_path = None
@@ -1069,6 +1070,8 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
                     # 检查关键签名
                     if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
                         ia_items_configs.append(full_path)
+                    if "font_images" in data:
+                        ia_font_image_configs.append(full_path)
                     if "categories" in data:
                         ia_categories_configs.append(full_path)
                     if "recipes" in data:
@@ -1080,11 +1083,11 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
     # 如果仍未找到资源包，尝试寻找 textures/models 的父级 (处理非标准结构)
     if ia_resourcepack_path is None:
         # 如果有配置文件，默认为提取根目录
-        if ia_items_configs:
+        if ia_items_configs or ia_font_image_configs:
             ia_resourcepack_path = extract_dir
 
-    if not ia_items_configs:
-            return jsonify({'error': '未能找到包含物品定义的配置文件 (items/equipments)'}), 400
+    if not ia_items_configs and not ia_font_image_configs:
+            return jsonify({'error': '未能找到包含物品或 GUI 定义的配置文件 (items/equipments/font_images)'}), 400
 
     # 4. 运行转换
     converter = IAConverter()
@@ -1096,6 +1099,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
         "armors_rendering": {},
         "legacy_armor_renderings": {},
         "templates": {},
+        "font_images": {},
         "recipes": {},
         "loots": {},
         "info": {}
@@ -1124,10 +1128,24 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
         if "templates" in data:
             merged_items_data.setdefault("templates", {}).update(data["templates"])
 
+        if "font_images" in data:
+            merged_items_data.setdefault("font_images", {}).update(data["font_images"])
+
         if "loots" in data and isinstance(data["loots"], dict):
             for loot_group, loot_group_data in data["loots"].items():
                 if isinstance(loot_group_data, dict):
                     merged_items_data.setdefault("loots", {}).setdefault(loot_group, {}).update(loot_group_data)
+
+    for config_path in ia_font_image_configs:
+        if config_path in ia_items_configs:
+            continue
+        data = converter.load_config(config_path)
+        if not data:
+            continue
+        if "info" in data and not merged_items_data["info"]:
+            merged_items_data["info"] = data["info"]
+        if "font_images" in data:
+            merged_items_data.setdefault("font_images", {}).update(data["font_images"])
 
     ia_data = merged_items_data
     

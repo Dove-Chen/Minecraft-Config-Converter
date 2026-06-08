@@ -189,6 +189,137 @@ class BlockConversionTests(unittest.TestCase):
         self.assertEqual(loot["min_amount"], 1)
         self.assertEqual(loot["max_amount"], 2)
 
+    def test_itemsadder_font_images_to_craftengine_images(self):
+        ia_data = {
+            "info": {"namespace": "testpack"},
+            "font_images": {
+                "blank_menu": {
+                    "path": "gui/blank_menu.png",
+                    "scale_ratio": 256,
+                    "y_position": 13,
+                }
+            },
+            "items": {
+                "menu_item": {
+                    "display_name": ":offset_-16::blank_menu:Menu Item",
+                    "lore": ["%img_offset_4%%img_blank_menu%Lore"],
+                    "resource": {"material": "PAPER"},
+                }
+            },
+            "categories": {
+                "shop": {
+                    "enabled": True,
+                    "name": ":offset_-16::blank_menu:Shop",
+                    "items": ["testpack:menu_item"],
+                }
+            },
+        }
+
+        converter = IAConverter()
+        converted = converter.convert(ia_data)
+
+        self.assertEqual(
+            converted["images"]["testpack:blank_menu"],
+            {
+                "file": "testpack:gui/blank_menu.png",
+                "height": 256,
+                "ascent": 13,
+                "font": "minecraft:default",
+            },
+        )
+        self.assertEqual(converter.font_image_texture_keys, {"gui/blank_menu"})
+        self.assertEqual(
+            converted["items"]["testpack:menu_item"]["data"]["item_name"],
+            "<!i><white><shift:-16><image:testpack:blank_menu>Menu Item",
+        )
+        self.assertEqual(
+            converted["items"]["testpack:menu_item"]["data"]["lore"],
+            ["<shift:4><image:testpack:blank_menu>Lore"],
+        )
+        self.assertEqual(
+            converted["categories"]["testpack:shop"]["name"],
+            "<!i><shift:-16><image:testpack:blank_menu>Shop",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = (
+                Path(tmp)
+                / "CraftEngine"
+                / "resources"
+                / "testpack"
+                / "configuration"
+                / "items"
+                / "testpack"
+            )
+            converter.save_config(str(output_dir))
+            self.assertTrue(
+                (
+                    Path(tmp)
+                    / "CraftEngine"
+                    / "resources"
+                    / "testpack"
+                    / "configuration"
+                    / "images"
+                    / "testpack"
+                    / "images.yml"
+                ).exists()
+            )
+
+    def test_craftengine_images_to_itemsadder_font_images(self):
+        ce_data = {
+            "images": {
+                "testpack:blank_menu": {
+                    "file": "testpack:gui/blank_menu.png",
+                    "height": 256,
+                    "ascent": 13,
+                }
+            },
+            "items": {
+                "testpack:menu_item": {
+                    "material": "paper",
+                    "data": {
+                        "item_name": "<!i><white><shift:-16><image:testpack:blank_menu>Menu Item",
+                        "lore": ["<shift:4><image:testpack:blank_menu>Lore"],
+                    },
+                }
+            },
+            "categories": {
+                "testpack:shop": {
+                    "name": "<shift:-16><image:testpack:blank_menu>Shop",
+                    "icon": "testpack:menu_item",
+                    "list": ["testpack:menu_item"],
+                }
+            },
+        }
+
+        converter = CEToIAConverter()
+        converted = converter.convert(ce_data, namespace="testpack")
+
+        self.assertEqual(
+            converted["font_images"]["blank_menu"],
+            {
+                "path": "gui/blank_menu.png",
+                "scale_ratio": 256,
+                "y_position": 13,
+            },
+        )
+        self.assertEqual(
+            converted["items"]["menu_item"]["name"],
+            ":offset_-16::blank_menu:Menu Item",
+        )
+        self.assertEqual(
+            converted["items"]["menu_item"]["lore"],
+            [":offset_4::blank_menu:Lore"],
+        )
+        self.assertEqual(
+            converted["categories"]["shop"]["name"],
+            ":offset_-16::blank_menu:Shop",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            converter.save_config(tmp)
+            self.assertTrue((Path(tmp) / "testpack_font_images.yml").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

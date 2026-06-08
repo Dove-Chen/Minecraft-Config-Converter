@@ -12,7 +12,8 @@ class IAMigrator(BaseMigrator):
         armor_humanoid_keys=None,
         armor_leggings_keys=None,
         block_texture_keys=None,
-        block_model_keys=None
+        block_model_keys=None,
+        font_image_texture_keys=None
     ):
         super().__init__(ia_resourcepack_path, ce_resourcepack_path)
         self.namespace = namespace
@@ -20,6 +21,7 @@ class IAMigrator(BaseMigrator):
         self.armor_leggings_keys = set(armor_leggings_keys or [])
         self.block_texture_keys = set(block_texture_keys or [])
         self.block_model_keys = set(block_model_keys or [])
+        self.font_image_texture_keys = set(font_image_texture_keys or [])
 
     def migrate(self):
         """执行完整的迁移过程。"""
@@ -204,6 +206,8 @@ class IAMigrator(BaseMigrator):
         if path.startswith("textures/"):
             path = path[len("textures/"):]
         key = self._normalize_texture_key_from_path(path)
+        if key in self.font_image_texture_keys:
+            return key
         if key in self.block_texture_keys:
             return self._block_texture_key_to_dest_rel(key)
         if key in self.armor_humanoid_keys:
@@ -264,7 +268,9 @@ class IAMigrator(BaseMigrator):
                 rel_path = os.path.relpath(root, src_dir)
                 src_file = os.path.join(root, file)
                 key = self._normalize_texture_key_from_path(os.path.join(rel_path, file))
-                if key in self.block_texture_keys:
+                if key in self.font_image_texture_keys:
+                    dest_rel = os.path.dirname(key)
+                elif key in self.block_texture_keys:
                     dest_rel = self._block_texture_key_to_dest_rel(key, directory=True)
                 elif key in self.armor_humanoid_keys:
                     dest_rel = self._armor_key_to_dest_rel(key, is_leggings=False)

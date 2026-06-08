@@ -174,7 +174,7 @@ class PackageAnalyzer:
 
     def _is_ia_config(self, data):
         # 简单的启发式检测 IA 配置
-        keys = ["items", "categories", "equipments", "armors_rendering", "legacy_armor_renderings", "recipes", "loots", "info"]
+        keys = ["items", "font_images", "categories", "equipments", "armors_rendering", "legacy_armor_renderings", "recipes", "loots", "info"]
         # ItemsAdder 配置通常有 info.namespace
         if "info" in data and "namespace" in data["info"]:
             return True
@@ -214,7 +214,7 @@ class PackageAnalyzer:
                     return True
                 if "material" in item and ("resource" not in item and "graphics" not in item):
                     return True
-        for key in ("blocks", "equipments", "categories", "recipes", "furniture"):
+        for key in ("blocks", "equipments", "images", "categories", "recipes", "furniture"):
             if self._get_section(data, key):
                 return True
         return False
@@ -222,7 +222,7 @@ class PackageAnalyzer:
     def _has_section_identifier(self, data):
         if not isinstance(data, dict):
             return False
-        ce_sections = {"items", "blocks", "equipments", "categories", "recipes", "furniture"}
+        ce_sections = {"items", "blocks", "equipments", "images", "categories", "recipes", "furniture"}
         for key in data.keys():
             if not isinstance(key, str) or "#" not in key:
                 continue
@@ -248,6 +248,12 @@ class PackageAnalyzer:
 
         if self._get_section(data, "armors_rendering") or self._get_section(data, "legacy_armor_renderings"):
             return True
+
+        font_images_section = self._get_section(data, "font_images")
+        if isinstance(font_images_section, dict):
+            for image in font_images_section.values():
+                if isinstance(image, dict) and ("path" in image or "symbol" in image or "y_position" in image or "scale_ratio" in image):
+                    return True
 
         categories_section = self._get_section(data, "categories")
         if isinstance(categories_section, dict):

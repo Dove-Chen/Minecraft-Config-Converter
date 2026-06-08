@@ -13,6 +13,7 @@ class IAConverter(BaseConverter):
             "blocks": {},
             "equipments": {},
             "templates": {},
+            "images": {},
             "categories": {},
             "recipes": {}
         }
@@ -23,15 +24,17 @@ class IAConverter(BaseConverter):
         self.armor_leggings_keys = set()
         self.block_texture_keys = set()
         self.block_model_keys = set()
+        self.font_image_texture_keys = set()
         self.ia_block_loots_by_type = {}
         self.block_visual_state_counters = {}
+        self.ia_font_image_ids = set()
 
     def set_resource_paths(self, ia_root, ce_root):
         self.ia_resourcepack_root = ia_root
         self.ce_resourcepack_root = ce_root
 
     def _resolve_configuration_output_dirs(self, output_dir):
-        sections = ("items", "blocks", "categories", "recipes")
+        sections = ("items", "blocks", "images", "categories", "recipes")
         fallback_dirs = {section: output_dir for section in sections}
         fallback_dirs["pack_root"] = None
 
@@ -50,6 +53,7 @@ class IAConverter(BaseConverter):
         return {
             "items": str(config_root / "items" / self.namespace),
             "blocks": str(config_root / "blocks" / self.namespace),
+            "images": str(config_root / "images" / self.namespace),
             "categories": str(config_root / "categories" / self.namespace),
             "recipes": str(config_root / "recipes" / self.namespace),
             "pack_root": str(package_root) if package_root else None,
@@ -84,6 +88,7 @@ class IAConverter(BaseConverter):
         output_dirs = self._resolve_configuration_output_dirs(output_dir)
         items_output_dir = output_dirs["items"]
         blocks_output_dir = output_dirs["blocks"]
+        images_output_dir = output_dirs["images"]
         categories_output_dir = output_dirs["categories"]
         recipes_output_dir = output_dirs["recipes"]
 
@@ -128,6 +133,10 @@ class IAConverter(BaseConverter):
         if armor_data:
             self._write_yaml_with_footer(armor_data, os.path.join(items_output_dir, "armor.yml"))
 
+        if self.ce_config["images"]:
+            image_data = {"images": self.ce_config["images"]}
+            self._write_yaml_with_footer(image_data, os.path.join(images_output_dir, "images.yml"))
+
         # 3. 保存 categories.yml (分类)
         if self.ce_config["categories"]:
             cat_data = {"categories": self.ce_config["categories"]}
@@ -150,7 +159,8 @@ class IAConverter(BaseConverter):
                 self.armor_humanoid_keys,
                 self.armor_leggings_keys,
                 self.block_texture_keys,
-                self.block_model_keys
+                self.block_model_keys,
+                self.font_image_texture_keys
             )
             migrator.migrate()
             
@@ -171,6 +181,10 @@ class IAConverter(BaseConverter):
 
         self.ia_block_loots_by_type = self._build_block_loot_index(ia_data.get("loots", {}))
         self.block_visual_state_counters = {}
+        self.ia_font_image_ids = set()
+
+        if "font_images" in ia_data:
+            self._convert_font_images(ia_data["font_images"])
 
         # 转换物品
         if "items" in ia_data:
@@ -701,6 +715,102 @@ class IAConverter(BaseConverter):
         final_path = f"entity/equipment/{target_folder}/{subpath}" if subpath else f"entity/equipment/{target_folder}"
         return f"{self.namespace}:{final_path}"
 
+    def _convert_font_images(self, font_images_data):
+        if not isinstance(font_images_data, dict):
+            return
+        self.ia_font_image_ids = {str(image_id) for image_id in font_images_data.keys()}
+        for raw_id, image_data in font_images_data.items():
+            if not isinstance(image_data, dict):
+                continue
+            local_id = self._local_image_id(raw_id)
+            if not local_id:
+                continue
+
+            ce_image = {}
+            file_value = image_data.get("path") or image_data.get("file") or image_data.get("texture")
+            if file_value:
+                ce_image["file"] = self._normalize_ce_image_file(file_value)
+                texture_key = self._normalize_font_image_texture_key(file_value)
+                if texture_key:
+                    self.font_image_texture_keys.add(texture_key)
+
+            height = image_data.get("scale_ratio", image_data.get("height"))
+            if height is not None:
+                ce_image["height"] = height
+            ascent = image_data.get("y_position", image_data.get("ascent"))
+            if ascent is not None:
+                ce_image["ascent"] = ascent
+
+            font = image_data.get("font")
+            ce_image["font"] = font if font else "minecraft:default"
+
+            char = image_data.get("symbol") or image_data.get("char")
+            if char:
+                ce_image["char"] = char
+            if "shadow" in image_data:
+                ce_image["shadow"] = bool(image_data["shadow"])
+
+            self.ce_config["images"][f"{self.namespace}:{local_id}"] = ce_image
+
+    def _local_image_id(self, raw_id):
+        if raw_id is None:
+            return ""
+        image_id = str(raw_id).strip()
+        if ":" in image_id:
+            image_id = image_id.split(":", 1)[1]
+        return image_id
+
+    def _normalize_font_image_texture_key(self, raw_path):
+        if not raw_path:
+            return ""
+        path = str(raw_path).replace("\\", "/").strip()
+        if ":" in path:
+            path = path.split(":", 1)[1]
+        for prefix in ("assets/", "textures/"):
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+        if path.startswith(f"{self.namespace}/"):
+            path = path[len(self.namespace) + 1:]
+        path = path.strip("/")
+        if path.endswith(".png"):
+            path = path[:-4]
+        return path
+
+    def _normalize_ce_image_file(self, raw_path):
+        path = str(raw_path).replace("\\", "/").strip()
+        if ":" in path:
+            ns, rel = path.split(":", 1)
+            if ns == "minecraft":
+                return f"minecraft:{rel.strip('/')}"
+            path = rel
+        for prefix in ("assets/", "textures/"):
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+        if path.startswith(f"{self.namespace}/"):
+            path = path[len(self.namespace) + 1:]
+        return f"{self.namespace}:{path.strip('/')}"
+
+    def _convert_ia_text(self, value):
+        if not isinstance(value, str):
+            return value
+        text = re.sub(r"%img_offset_(-?\d+)%", r"<shift:\1>", value)
+        text = re.sub(r":offset_(-?\d+):", r"<shift:\1>", text)
+
+        def replace_percent(match):
+            image_id = match.group(1)
+            if image_id in self.ia_font_image_ids:
+                return f"<image:{self.namespace}:{image_id}>"
+            return match.group(0)
+
+        def replace_colon(match):
+            image_id = match.group(1)
+            if image_id in self.ia_font_image_ids:
+                return f"<image:{self.namespace}:{image_id}>"
+            return match.group(0)
+
+        text = re.sub(r"%img_([A-Za-z0-9_.-]+)%", replace_percent, text)
+        return re.sub(r":([A-Za-z0-9_.-]+):", replace_colon, text)
+
     def _convert_categories(self, categories_data):
         """
         将 ItemsAdder 分类转换为 CraftEngine 分类
@@ -747,10 +857,10 @@ class IAConverter(BaseConverter):
             # Remove Minecraft color codes (e.g. §6) from category name
             cat_name = cat_data.get('name', cat_key)
             if isinstance(cat_name, str):
-                cat_name = re.sub(r'§[0-9a-fk-or]', '', cat_name)
+                cat_name = re.sub(r'[§搂][0-9a-fk-or]', '', cat_name)
 
             ce_category = {
-                "name": f"<!i>{cat_name}",
+                "name": f"<!i>{self._convert_ia_text(cat_name)}",
                 "lore": [
                     "<!i><gray>该配置由 <#FFFF00>MCC TOOL</#FFFF00> 生成",
                     "<!i><gray>闲鱼店铺: <#FFFF00>快乐售货铺</#FFFF00>",
@@ -1927,6 +2037,7 @@ class IAConverter(BaseConverter):
             self.ce_config["equipments"][ce_key] = ce_entry
 
     def _format_display_name(self, name, data=None):
+        name = self._convert_ia_text(str(name))
 
         if "&" in name or "§" in name:
             name = name.replace("&", "§")
@@ -1944,7 +2055,7 @@ class IAConverter(BaseConverter):
         if lore_value is None:
             return None
         if isinstance(lore_value, list):
-            return [str(line) for line in lore_value]
+            return [self._convert_ia_text(str(line)) for line in lore_value]
         if isinstance(lore_value, str):
-            return [lore_value]
+            return [self._convert_ia_text(lore_value)]
         return None

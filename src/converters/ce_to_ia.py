@@ -12,6 +12,7 @@ class CEToIAConverter(BaseConverter):
             "info": {"namespace": self.namespace},
             "items": {},
             "equipments": {},
+            "font_images": {},
             "categories": {},
             "recipes": {},
             "loots": {}
@@ -19,6 +20,7 @@ class CEToIAConverter(BaseConverter):
         self.ce_resourcepack_roots = []
         self.ia_resourcepack_root = None
         self._ce_data = {}
+        self._ce_image_placeholder_map = {}
 
     def set_resource_paths(self, ce_roots, ia_root):
         self.ce_resourcepack_roots = []
@@ -40,12 +42,15 @@ class CEToIAConverter(BaseConverter):
             "info": {"namespace": self.namespace},
             "items": {},
             "equipments": {},
+            "font_images": {},
             "categories": {},
             "recipes": {},
             "loots": {}
         }
         self._ce_data = ce_data if isinstance(ce_data, dict) else {}
+        self._ce_image_placeholder_map = {}
 
+        self._convert_images(self._ce_data.get("images", {}))
         self._convert_equipments(self._ce_data.get("equipments", {}))
         self._convert_items(self._ce_data.get("items", {}))
         self._convert_categories(self._ce_data.get("categories", {}))
@@ -81,6 +86,12 @@ class CEToIAConverter(BaseConverter):
                     "items": armor_items
                 },
                 os.path.join(output_dir, f"{self.namespace}_armor.yml")
+            )
+
+        if self.ia_config["font_images"]:
+            self._write_yaml_with_footer(
+                {"info": self.ia_config["info"], "font_images": self.ia_config["font_images"]},
+                os.path.join(output_dir, f"{self.namespace}_font_images.yml")
             )
 
         if self.ia_config["categories"]:
@@ -507,6 +518,59 @@ class CEToIAConverter(BaseConverter):
                 ia_item.setdefault("resource", {})["generate"] = False
                 ia_item["resource"]["model_path"] = model_from_variant
 
+    def _convert_images(self, images):
+        if not isinstance(images, dict):
+            return
+        for raw_id, image_data in images.items():
+            if not isinstance(image_data, dict):
+                continue
+            image_id = self._local_id(raw_id)
+            if not image_id:
+                continue
+
+            entry = {}
+            path = self._normalize_font_image_path(
+                self._get_dict_value(image_data, "file", "path", "texture")
+            )
+            if path:
+                entry["path"] = path
+
+            height = self._get_dict_value(image_data, "height", "scale_ratio")
+            if height is not None:
+                entry["scale_ratio"] = height
+            ascent = self._get_dict_value(image_data, "ascent", "y_position")
+            if ascent is not None:
+                entry["y_position"] = ascent
+
+            char = self._get_dict_value(image_data, "char", "symbol")
+            if char:
+                entry["symbol"] = char
+            if "shadow" in image_data:
+                entry["shadow"] = bool(image_data["shadow"])
+
+            if entry:
+                self.ia_config["font_images"][image_id] = entry
+                self._register_ce_image_placeholder(raw_id, image_id)
+                self._register_ce_image_placeholder(image_id, image_id)
+
+    def _register_ce_image_placeholder(self, raw_id, image_id):
+        if not raw_id or not image_id:
+            return
+        raw = str(raw_id).strip()
+        self._ce_image_placeholder_map[raw] = image_id
+        if ":" not in raw:
+            self._ce_image_placeholder_map[f"{self.namespace}:{raw}"] = image_id
+
+    def _normalize_font_image_path(self, value):
+        path = self._normalize_texture_path(value)
+        if not path:
+            return None
+        if path.startswith(f"{self.namespace}/"):
+            path = path[len(self.namespace) + 1:]
+        if not path.endswith(".png"):
+            path = f"{path}.png"
+        return path
+
     def _convert_equipments(self, equipments):
         if not isinstance(equipments, dict):
             return
@@ -892,8 +956,48 @@ class CEToIAConverter(BaseConverter):
         return raw_id
 
     def _to_plain_text(self, value):
-        plain = re.sub(r"<[^>]+>", "", str(value))
+        converted = self._convert_ce_text(str(value))
+        plain = re.sub(r"<[^>]+>", "", converted)
         return plain.strip()
+
+    def _convert_ce_text(self, value):
+        if not isinstance(value, str):
+            return value
+
+        text = re.sub(r"<shift:([^>]+)>", lambda m: self._format_ia_offset(m.group(1)), value)
+
+        def replace_image(match):
+            image_ref = match.group(1).strip()
+            image_id = self._ce_image_ref_to_ia_id(image_ref)
+            return f":{image_id}:" if image_id else match.group(0)
+
+        return re.sub(r"<image:([^>]+)>", replace_image, text)
+
+    def _format_ia_offset(self, raw_value):
+        value = str(raw_value).strip()
+        try:
+            number = float(value)
+            if number.is_integer():
+                value = str(int(number))
+        except ValueError:
+            pass
+        return f":offset_{value}:"
+
+    def _ce_image_ref_to_ia_id(self, image_ref):
+        if not image_ref:
+            return None
+        ref = str(image_ref).strip()
+        parts = ref.split(":")
+        candidates = [ref]
+        if len(parts) >= 2:
+            candidates.append(":".join(parts[:2]))
+            candidates.append(parts[1])
+        for candidate in candidates:
+            if candidate in self._ce_image_placeholder_map:
+                return self._ce_image_placeholder_map[candidate]
+        if len(parts) >= 2:
+            return parts[1]
+        return ref
 
     def _get_dict_value(self, data, *keys, default=None):
         if not isinstance(data, dict):
