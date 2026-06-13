@@ -64,6 +64,20 @@ class IAMigrator(BaseMigrator):
         path1 = os.path.join(self.input_path, "assets", self.namespace, resource_type)
         if os.path.exists(path1):
             return path1
+        # IA packs sometimes use a resource namespace that differs from info.namespace.
+        assets_root = os.path.join(self.input_path, "assets")
+        if os.path.isdir(assets_root):
+            candidates = []
+            for asset_namespace in sorted(os.listdir(assets_root)):
+                candidate = os.path.join(assets_root, asset_namespace, resource_type)
+                if os.path.isdir(candidate):
+                    candidates.append(candidate)
+            if len(candidates) == 1:
+                return candidates[0]
+            for candidate in candidates:
+                source_namespace = os.path.basename(os.path.dirname(candidate))
+                if source_namespace != "minecraft":
+                    return candidate
             
         # 2. 缺失 assets: namespace/type
         path2 = os.path.join(self.input_path, self.namespace, resource_type)

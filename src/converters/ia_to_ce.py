@@ -40,7 +40,6 @@ class IAConverter(BaseConverter):
     def _resolve_configuration_output_dirs(self, output_dir):
         sections = ("items", "blocks", "images", "categories", "recipes")
         fallback_dirs = {section: output_dir for section in sections}
-        fallback_dirs["pack_root"] = None
 
         output_path = Path(output_dir).resolve()
         parts = output_path.parts
@@ -53,32 +52,13 @@ class IAConverter(BaseConverter):
             return fallback_dirs
 
         config_root = Path(*parts[:config_index + 1])
-        package_root = Path(*parts[:config_index]) if config_index > 0 else None
         return {
             "items": str(config_root / "items" / self.namespace),
             "blocks": str(config_root / "blocks" / self.namespace),
             "images": str(config_root / "images" / self.namespace),
             "categories": str(config_root / "categories" / self.namespace),
             "recipes": str(config_root / "recipes" / self.namespace),
-            "pack_root": str(package_root) if package_root else None,
         }
-
-    def _write_pack_metadata(self, package_root):
-        if not package_root:
-            return
-        os.makedirs(package_root, exist_ok=True)
-        pack_path = os.path.join(package_root, "pack.yml")
-        if os.path.exists(pack_path):
-            return
-        self._write_yaml_with_footer(
-            {
-                "author": "MCC Tool",
-                "version": "1.0.0",
-                "description": "Converted from ItemsAdder by MCC Tool",
-                "namespace": self.namespace,
-            },
-            pack_path,
-        )
 
     def save_config(self, output_dir):
         """
@@ -95,8 +75,6 @@ class IAConverter(BaseConverter):
         images_output_dir = output_dirs["images"]
         categories_output_dir = output_dirs["categories"]
         recipes_output_dir = output_dirs["recipes"]
-
-        self._write_pack_metadata(output_dirs.get("pack_root"))
 
         # 如果目录不存在则创建
         os.makedirs(items_output_dir, exist_ok=True)
