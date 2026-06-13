@@ -105,6 +105,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (namespaceInput && namespaceInput.value.trim()) {
             formData.append('namespace', namespaceInput.value.trim());
         }
+
+        const fixRotationsInput = document.getElementById('fix-illegal-model-rotations');
+        if (fixRotationsInput && fixRotationsInput.checked) {
+            formData.append('fix_illegal_model_rotations', '1');
+        }
         
         progressSection.style.display = 'block';
         updateProgress(0, "正在转换...");
@@ -270,6 +275,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         </ul>
                     </div>
                 </div>
+                <div class="conversion-options" id="craftengine-options">
+                    <label class="checkbox-option">
+                        <input type="checkbox" id="fix-illegal-model-rotations" checked>
+                        <span>修正非法模型旋转角</span>
+                    </label>
+                </div>
                 <div class="actions">
                     <button id="start-convert-btn" class="btn-primary" ${!selectedTarget ? 'disabled' : ''}>开始转换</button>
                     <button onclick="location.reload()" class="btn-secondary">取消</button>
@@ -286,6 +297,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // 绑定点击事件
         const sourceGrid = document.getElementById('source-plugins-grid');
         const targetGrid = document.getElementById('target-plugins-grid');
+
+        function syncConversionOptions() {
+            const target = document.getElementById('selected-target').value;
+            const craftEngineOptions = document.getElementById('craftengine-options');
+            if (craftEngineOptions) {
+                craftEngineOptions.style.display = target === 'CraftEngine' ? 'flex' : 'none';
+            }
+        }
         
         sourceGrid.addEventListener('click', (e) => {
             const card = e.target.closest('.plugin-card.selectable');
@@ -305,9 +324,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 targetGrid.querySelectorAll('.plugin-card').forEach(c => c.classList.remove('selected'));
                 card.classList.add('selected');
                 document.getElementById('start-convert-btn').disabled = false;
+                syncConversionOptions();
             }
         });
         
+        syncConversionOptions();
         document.getElementById('start-convert-btn').onclick = () => startConversion(sessionId);
     }
 

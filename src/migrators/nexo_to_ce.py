@@ -2,13 +2,24 @@ import os
 import shutil
 import json
 from .base import BaseMigrator
+from .model_utils import normalize_illegal_element_rotations
 
 class NexoMigrator(BaseMigrator):
-    def __init__(self, nexo_resourcepack_path, ce_resourcepack_path, namespace, armor_humanoid_keys=None, armor_leggings_keys=None, source_namespaces=None):
+    def __init__(
+        self,
+        nexo_resourcepack_path,
+        ce_resourcepack_path,
+        namespace,
+        armor_humanoid_keys=None,
+        armor_leggings_keys=None,
+        source_namespaces=None,
+        fix_illegal_model_rotations=False
+    ):
         super().__init__(nexo_resourcepack_path, ce_resourcepack_path)
         self.namespace = namespace
         self.armor_humanoid_keys = set(armor_humanoid_keys or [])
         self.armor_leggings_keys = set(armor_leggings_keys or [])
+        self.fix_illegal_model_rotations = bool(fix_illegal_model_rotations)
         # Nexo的命名空间直接采用配置的名字，但也需要扫描其他源命名空间
         self.source_namespaces = set(source_namespaces or [])
         self.source_namespaces.add(self.namespace)
@@ -289,6 +300,11 @@ class NexoMigrator(BaseMigrator):
                             if ns != self.namespace:
                                 new_path = self._inject_namespace_path(new_path, ns)
                             override["model"] = f"{self.namespace}:{new_path}"
+
+            if self.fix_illegal_model_rotations:
+                changed = normalize_illegal_element_rotations(data)
+                if changed:
+                    print(f"已修正模型非法元素旋转角 {changed} 处: {src_file}")
 
             with open(dest_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)

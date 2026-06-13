@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -319,6 +320,113 @@ class BlockConversionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             converter.save_config(tmp)
             self.assertTrue((Path(tmp) / "testpack_font_images.yml").exists())
+
+    def test_itemsadder_to_craftengine_resource_migration_copies_sounds(self):
+        converter = IAConverter()
+        with tempfile.TemporaryDirectory() as tmp:
+            ia_pack = Path(tmp) / "ItemsAdder" / "contents" / "testpack" / "resourcepack"
+            sounds_dir = ia_pack / "assets" / "testpack" / "sounds" / "magic"
+            sounds_dir.mkdir(parents=True)
+            (sounds_dir / "chime.ogg").write_bytes(b"ogg")
+            (ia_pack / "assets" / "testpack" / "sounds.json").write_text(
+                json.dumps({"magic.chime": {"sounds": ["magic/chime"]}}),
+                encoding="utf-8",
+            )
+
+            output_items = Path(tmp) / "CraftEngine" / "configuration"
+            output_pack = Path(tmp) / "CraftEngine" / "resourcepack"
+            converter.set_resource_paths(str(ia_pack), str(output_pack))
+            converter.convert(
+                {
+                    "info": {"namespace": "testpack"},
+                    "items": {"ruby": {"resource": {"material": "PAPER"}}},
+                }
+            )
+            converter.save_config(str(output_items))
+
+            self.assertTrue(
+                (output_pack / "assets" / "testpack" / "sounds" / "magic" / "chime.ogg").exists()
+            )
+            self.assertTrue((output_pack / "assets" / "testpack" / "sounds.json").exists())
+
+    def test_itemsadder_to_craftengine_prefers_internal_key_style(self):
+        converter = IAConverter()
+        converted = converter.convert(
+            {
+                "info": {"namespace": "testpack"},
+                "equipments": {
+                    "ruby_armor": {
+                        "layer_1": "armor/ruby_layer_1.png",
+                        "layer_2": "armor/ruby_layer_2.png",
+                    }
+                },
+                "items": {
+                    "ruby_leggings": {
+                        "display_name": "Ruby Leggings",
+                        "resource": {
+                            "material": "LEATHER_LEGGINGS",
+                            "model_id": 42,
+                            "textures": ["armor/ruby_leggings.png"],
+                        },
+                        "equipment": {"id": "ruby_armor", "slot": "legs"},
+                    }
+                },
+            }
+        )
+
+        item = converted["items"]["testpack:ruby_leggings"]
+        self.assertEqual(item["material"], "DIAMOND_LEGGINGS")
+        self.assertEqual(item["data"]["item_name"], "<!i><white>Ruby Leggings")
+        self.assertNotIn("item-name", item["data"])
+        self.assertEqual(item["custom_model_data"], 42)
+        self.assertNotIn("custom-model-data", item)
+        self.assertEqual(item["settings"]["equipment"]["asset_id"], "testpack:ruby_armor")
+        self.assertEqual(item["settings"]["equipment"]["slot"], "legs")
+        self.assertNotIn("asset-id", item["settings"]["equipment"])
+        self.assertIn("humanoid_leggings", converted["equipments"]["testpack:ruby_armor"])
+        self.assertNotIn("humanoid-leggings", converted["equipments"]["testpack:ruby_armor"])
+
+    def test_itemsadder_to_craftengine_can_fix_illegal_model_rotations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ia_pack = Path(tmp) / "ItemsAdder" / "contents" / "testpack" / "resourcepack"
+            model_dir = ia_pack / "assets" / "testpack" / "models" / "item"
+            model_dir.mkdir(parents=True)
+            (model_dir / "helmet.json").write_text(
+                json.dumps(
+                    {
+                        "textures": {"0": "testpack:item/helmet"},
+                        "elements": [
+                            {
+                                "from": [0, 0, 0],
+                                "to": [1, 1, 1],
+                                "rotation": {"angle": 17.5, "axis": "z", "origin": [0, 0, 0]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            fixed_output = Path(tmp) / "fixed" / "resourcepack"
+            converter = IAConverter()
+            converter.set_fix_illegal_model_rotations(True)
+            converter.set_resource_paths(str(ia_pack), str(fixed_output))
+            converter.convert({"info": {"namespace": "testpack"}, "items": {"helmet": {"resource": {"material": "PAPER"}}}})
+            converter.save_config(str(Path(tmp) / "fixed" / "configuration"))
+            fixed_model = json.loads(
+                (fixed_output / "assets" / "testpack" / "models" / "item" / "helmet.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(fixed_model["elements"][0]["rotation"]["angle"], 22.5)
+
+            raw_output = Path(tmp) / "raw" / "resourcepack"
+            converter = IAConverter()
+            converter.set_resource_paths(str(ia_pack), str(raw_output))
+            converter.convert({"info": {"namespace": "testpack"}, "items": {"helmet": {"resource": {"material": "PAPER"}}}})
+            converter.save_config(str(Path(tmp) / "raw" / "configuration"))
+            raw_model = json.loads(
+                (raw_output / "assets" / "testpack" / "models" / "item" / "helmet.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(raw_model["elements"][0]["rotation"]["angle"], 17.5)
 
 
 if __name__ == "__main__":

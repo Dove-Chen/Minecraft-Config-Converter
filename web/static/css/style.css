@@ -570,6 +570,31 @@ footer a:hover {
     color: #ccc;
 }
 
+.conversion-options {
+    display: flex;
+    justify-content: center;
+    margin: -0.5rem 0 1.5rem;
+}
+
+.checkbox-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #ddd;
+    background: #0a0a0a;
+    border: 1px solid #333;
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.checkbox-option input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--primary-color);
+}
+
 @media (max-width: 768px) {
     .container {
         padding: 1rem;

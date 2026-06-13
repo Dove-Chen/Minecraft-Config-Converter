@@ -2,6 +2,7 @@ import os
 import shutil
 import json
 from .base import BaseMigrator
+from .model_utils import normalize_illegal_element_rotations
 
 class IAMigrator(BaseMigrator):
     def __init__(
@@ -13,7 +14,8 @@ class IAMigrator(BaseMigrator):
         armor_leggings_keys=None,
         block_texture_keys=None,
         block_model_keys=None,
-        font_image_texture_keys=None
+        font_image_texture_keys=None,
+        fix_illegal_model_rotations=False
     ):
         super().__init__(ia_resourcepack_path, ce_resourcepack_path)
         self.namespace = namespace
@@ -22,6 +24,7 @@ class IAMigrator(BaseMigrator):
         self.block_texture_keys = set(block_texture_keys or [])
         self.block_model_keys = set(block_model_keys or [])
         self.font_image_texture_keys = set(font_image_texture_keys or [])
+        self.fix_illegal_model_rotations = bool(fix_illegal_model_rotations)
 
     def migrate(self):
         """执行完整的迁移过程。"""
@@ -449,6 +452,11 @@ class IAMigrator(BaseMigrator):
                                     path_part = f"item/{path_part}"
                                 override["model"] = f"{self.namespace}:{path_part}"
 
+            if self.fix_illegal_model_rotations:
+                changed = normalize_illegal_element_rotations(data)
+                if changed:
+                    print(f"已修正模型非法元素旋转角 {changed} 处: {src_file}")
+
             with open(dest_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
                 
@@ -456,5 +464,26 @@ class IAMigrator(BaseMigrator):
             print(f"处理模型 {src_file} 时出错: {e}")
 
     def _migrate_sounds(self):
-        # 占位符
-        pass
+        src_dir = self._get_resource_dir("sounds")
+        if src_dir:
+            for root, _, files in os.walk(src_dir):
+                for file in files:
+                    if not file.lower().endswith((".ogg", ".wav", ".mcmeta")):
+                        continue
+
+                    rel_path = os.path.relpath(root, src_dir)
+                    dest_dir = os.path.join(self.output_path, "assets", self.namespace, "sounds", rel_path)
+                    os.makedirs(dest_dir, exist_ok=True)
+                    shutil.copy2(os.path.join(root, file), os.path.join(dest_dir, file))
+
+        for sounds_json in (
+            os.path.join(self.input_path, "assets", self.namespace, "sounds.json"),
+            os.path.join(self.input_path, self.namespace, "sounds.json"),
+            os.path.join(self.input_path, "sounds.json"),
+        ):
+            if not os.path.isfile(sounds_json):
+                continue
+            dest_dir = os.path.join(self.output_path, "assets", self.namespace)
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.copy2(sounds_json, os.path.join(dest_dir, "sounds.json"))
+            break

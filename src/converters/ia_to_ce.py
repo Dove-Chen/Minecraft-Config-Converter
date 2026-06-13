@@ -28,10 +28,14 @@ class IAConverter(BaseConverter):
         self.ia_block_loots_by_type = {}
         self.block_visual_state_counters = {}
         self.ia_font_image_ids = set()
+        self.fix_illegal_model_rotations = False
 
     def set_resource_paths(self, ia_root, ce_root):
         self.ia_resourcepack_root = ia_root
         self.ce_resourcepack_root = ce_root
+
+    def set_fix_illegal_model_rotations(self, enabled):
+        self.fix_illegal_model_rotations = bool(enabled)
 
     def _resolve_configuration_output_dirs(self, output_dir):
         sections = ("items", "blocks", "images", "categories", "recipes")
@@ -160,7 +164,8 @@ class IAConverter(BaseConverter):
                 self.armor_leggings_keys,
                 self.block_texture_keys,
                 self.block_model_keys,
-                self.font_image_texture_keys
+                self.font_image_texture_keys,
+                fix_illegal_model_rotations=self.fix_illegal_model_rotations
             )
             migrator.migrate()
             
@@ -1241,6 +1246,14 @@ class IAConverter(BaseConverter):
             key = str(raw_slot).strip().lower()
             return slot_map.get(key, key)
 
+        def _diamond_material_for_slot(slot_name):
+            return {
+                "head": "DIAMOND_HELMET",
+                "chest": "DIAMOND_CHESTPLATE",
+                "legs": "DIAMOND_LEGGINGS",
+                "feet": "DIAMOND_BOOTS"
+            }.get(slot_name)
+
         # 检查旧版 equipment
         if "equipment" in ia_data:
             equipment_id = ia_data["equipment"].get("id")
@@ -1253,18 +1266,15 @@ class IAConverter(BaseConverter):
                 slot = _normalize_slot(armor_props["slot"]) or slot
 
         # 如果需要，从材质推断槽位 (尽管 specific_properties 通常会设置它)
-        material = ce_item["material"]
+        material = str(ce_item["material"]).upper()
         if material.endswith("_CHESTPLATE"): slot = "chest"
         elif material.endswith("_LEGGINGS"): slot = "legs"
         elif material.endswith("_BOOTS"): slot = "feet"
         
         if equipment_id:
-            # 如果材质是默认的 STONE，更新材质以确保其可穿戴
-            if ce_item["material"] == "STONE":
-                if slot == "head": ce_item["material"] = "DIAMOND_HELMET"
-                elif slot == "chest": ce_item["material"] = "DIAMOND_CHESTPLATE"
-                elif slot == "legs": ce_item["material"] = "DIAMOND_LEGGINGS"
-                elif slot == "feet": ce_item["material"] = "DIAMOND_BOOTS"
+            diamond_material = _diamond_material_for_slot(slot)
+            if diamond_material:
+                ce_item["material"] = diamond_material
             
             # 处理 ID 中可能存在的命名空间
             # 形式: namespace:id -> 移除 namespace 部分

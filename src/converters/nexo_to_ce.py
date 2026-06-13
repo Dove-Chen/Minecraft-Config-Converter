@@ -20,10 +20,14 @@ class NexoConverter(BaseConverter):
         self.armor_humanoid_keys = set()
         self.armor_leggings_keys = set()
         self.source_namespaces = set()
+        self.fix_illegal_model_rotations = False
 
     def set_resource_paths(self, nexo_root, ce_root):
         self.nexo_resourcepack_root = nexo_root
         self.ce_resourcepack_root = ce_root
+
+    def set_fix_illegal_model_rotations(self, enabled):
+        self.fix_illegal_model_rotations = bool(enabled)
 
     def save_config(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
@@ -76,7 +80,8 @@ class NexoConverter(BaseConverter):
                 self.namespace,
                 self.armor_humanoid_keys,
                 self.armor_leggings_keys,
-                source_namespaces=self.source_namespaces
+                source_namespaces=self.source_namespaces,
+                fix_illegal_model_rotations=self.fix_illegal_model_rotations
             )
             migrator.migrate()
             
@@ -429,7 +434,7 @@ class NexoConverter(BaseConverter):
         ce_item = {
             "material": material,
             "data": {
-                "item-name": self._format_display_name(item_name)
+                "item_name": self._format_display_name(item_name)
             }
         }
         
@@ -455,7 +460,7 @@ class NexoConverter(BaseConverter):
                 default=None,
             )
         if custom_model_data is not None:
-             ce_item["custom-model-data"] = custom_model_data
+             ce_item["custom_model_data"] = custom_model_data
 
         mechanics = self._get_mechanics_data(data)
         
@@ -876,6 +881,14 @@ class NexoConverter(BaseConverter):
         if pack is None:
             pack = self._get_pack_data(nexo_data)
         custom_armor = self._get_custom_armor_data(pack)
+
+        def _diamond_material_for_slot(slot_name):
+            return {
+                "head": "DIAMOND_HELMET",
+                "chest": "DIAMOND_CHESTPLATE",
+                "legs": "DIAMOND_LEGGINGS",
+                "feet": "DIAMOND_BOOTS"
+            }.get(slot_name)
         
         slot = "head"
         material = str(ce_item["material"]).upper()
@@ -903,13 +916,17 @@ class NexoConverter(BaseConverter):
 
         has_custom_equipment = bool(layer1 or layer2 or self._get_dict_value(custom_armor, "id", "asset_id", "asset-id", default=None))
         if has_custom_equipment:
+            diamond_material = _diamond_material_for_slot(slot)
+            if diamond_material:
+                ce_item["material"] = diamond_material
+
             asset_seed = self._get_dict_value(custom_armor, "id", "asset_id", "asset-id", default=None) or layer1 or layer2 or texture_path
             asset_id = self._infer_armor_asset_id(asset_seed, slot)
             equipment_ref = f"{self.namespace}:{asset_id}"
 
             ce_item["settings"] = {
                 "equipment": {
-                    "asset-id": equipment_ref,
+                    "asset_id": equipment_ref,
                     "slot": slot
                 }
             }
@@ -918,7 +935,7 @@ class NexoConverter(BaseConverter):
             if layer1:
                 ce_equipment["humanoid"] = self._normalize_equipment_texture_path(layer1, is_leggings=False)
             if layer2:
-                ce_equipment["humanoid-leggings"] = self._normalize_equipment_texture_path(layer2, is_leggings=True)
+                ce_equipment["humanoid_leggings"] = self._normalize_equipment_texture_path(layer2, is_leggings=True)
             self.ce_config["equipments"][equipment_ref] = ce_equipment
 
         if texture_path:

@@ -106,6 +106,10 @@ def _next_available_output_path(output_filename):
         candidate_name = f"{stem}_{counter}{ext or '.zip'}"
         counter += 1
 
+def _form_flag_enabled(name):
+    value = request.form.get(name, "")
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -1078,6 +1082,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
     if user_namespace and re.match(r'^[0-9a-z_.-]+$', user_namespace):
         # 用户指定了命名空间，合并所有配置
         converter = NexoConverter()
+        converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
         merged_data = {}
         for config_path in nexo_items_configs:
             data = safe_load_yaml(config_path)
@@ -1116,6 +1121,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
 
         for namespace, merged_data in grouped_data.items():
             converter = NexoConverter()
+            converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
             ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
             ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
             ce_res_dir = os.path.join(ce_output_base, "resourcepack")
@@ -1353,6 +1359,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
 
     # 4. 运行转换
     converter = IAConverter()
+    converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
     
     # 加载并合并所有物品配置
     merged_items_data = {
@@ -1525,6 +1532,7 @@ def _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, t
     ia_config = OraxenToIAConverter().convert(merged_data, namespace=namespace)
 
     converter = IAConverter()
+    converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
     ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
     ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
     ce_res_dir = os.path.join(ce_output_base, "resourcepack")
