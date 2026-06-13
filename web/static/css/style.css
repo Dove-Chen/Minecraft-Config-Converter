@@ -570,6 +570,66 @@ footer a:hover {
     color: #ccc;
 }
 
+.batch-namespace-section {
+    background-color: #0a0a0a;
+    border: 1px solid #333;
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    margin: -0.5rem 0 2rem;
+}
+
+.batch-namespace-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    color: #fff;
+    font-weight: 600;
+    margin-bottom: 1rem;
+}
+
+.batch-namespace-header span:last-child {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.batch-namespace-list {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.batch-namespace-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) minmax(180px, 1.2fr);
+    gap: 1rem;
+    align-items: center;
+    background: #111;
+    border: 1px solid #2a2a2a;
+    border-radius: var(--radius-sm);
+    padding: 0.85rem;
+}
+
+.batch-namespace-source {
+    min-width: 0;
+}
+
+.batch-source-name {
+    display: block;
+    color: #fff;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.batch-source-meta {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+}
+
 .conversion-options {
     display: flex;
     justify-content: center;
@@ -612,6 +672,10 @@ footer a:hover {
     }
 
     .report-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .batch-namespace-row {
         grid-template-columns: 1fr;
     }
 

@@ -71,9 +71,15 @@ class IAToOraxenConverter(BaseConverter):
                     entry["shape"] = entry.pop("pattern")
                 grouped.setdefault(recipe_type, {})[recipe_id] = entry
             for recipe_type, recipes in grouped.items():
+                recipe_path = os.path.join(recipes_dir, f"{recipe_type}.yml")
+                if os.path.exists(recipe_path):
+                    existing = self.load_config(recipe_path)
+                    if isinstance(existing, dict):
+                        existing.update(recipes)
+                        recipes = existing
                 self._write_yaml_with_footer(
                     recipes,
-                    os.path.join(recipes_dir, f"{recipe_type}.yml"),
+                    recipe_path,
                     dumper=RecipeDumper,
                 )
 

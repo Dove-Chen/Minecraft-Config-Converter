@@ -5,13 +5,14 @@ import shutil
 import zipfile
 import uuid
 import re
+import json
 from threading import Thread
 import time
 import yaml
 
-# 导入核心逻辑
+# 瀵煎叆鏍稿績閫昏緫
 import sys
-# 将项目根目录添加到 python path
+# 灏嗛」鐩牴鐩綍娣诲姞鍒?python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.converters.ia_to_ce import IAConverter
 from src.converters.ia_to_nexo import IAToNexoConverter
@@ -29,19 +30,19 @@ from src.utils.yaml_loader import safe_load_yaml
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'temp_uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.getcwd(), 'temp_output')
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB 限制
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB 闄愬埗
 
-# 支持的插件列表
+# 鏀寔鐨勬彃浠跺垪琛?
 SUPPORTED_PLUGINS = [
     {"id": "ItemsAdder", "name": "ItemsAdder", "icon": "/static/images/itemsadder.webp"},
     {"id": "Nexo", "name": "Nexo", "icon": "/static/images/nexo.webp"},
     {"id": "Oraxen", "name": "Oraxen", "icon": "/static/images/oraxen.webp"},
     {"id": "CraftEngine", "name": "CraftEngine", "icon": "/static/images/craftengine.webp"},
     {"id": "MythicCrucible", "name": "MythicCrucible", "icon": "/static/images/mythiccrucible.webp"}
-    # {"id": "HMCCosmetics", "name": "HMCCosmetics", "icon": "👒"}
+    # {"id": "HMCCosmetics", "name": "HMCCosmetics", "icon": "馃憭"}
 ]
 
-# 确保临时目录存在
+# 纭繚涓存椂鐩綍瀛樺湪
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
@@ -58,9 +59,9 @@ def _safe_join_under(base_dir, *parts):
     target_path = os.path.abspath(os.path.join(base_path, *parts))
     try:
         if os.path.commonpath([base_path, target_path]) != base_path:
-            raise ValueError("检测到不安全的路径")
+            raise ValueError("妫€娴嬪埌涓嶅畨鍏ㄧ殑璺緞")
     except ValueError:
-        raise ValueError("检测到不安全的路径")
+        raise ValueError("妫€娴嬪埌涓嶅畨鍏ㄧ殑璺緞")
     return target_path
 
 def _sanitize_upload_filename(raw_filename):
@@ -72,7 +73,7 @@ def _sanitize_upload_filename(raw_filename):
 def _save_uploaded_zip(file, session_upload_dir):
     filename = _sanitize_upload_filename(file.filename)
     if not filename.lower().endswith(".zip"):
-        raise ValueError("请上传 .zip 文件")
+        raise ValueError("璇蜂笂浼?.zip 鏂囦欢")
     file_path = _safe_join_under(session_upload_dir, filename)
     file.save(file_path)
     return filename, file_path
@@ -117,11 +118,11 @@ def index():
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
     if 'file' not in request.files:
-        return jsonify({'error': '没有收到文件'}), 400
+        return jsonify({'error': '娌℃湁鏀跺埌鏂囦欢'}), 400
     
     file = request.files['file']
     if file.filename == '':
-        return jsonify({'error': '未选择文件'}), 400
+        return jsonify({'error': '鏈€夋嫨鏂囦欢'}), 400
 
     if file:
         session_id = str(uuid.uuid4())
@@ -134,16 +135,16 @@ def analyze():
             extract_dir = os.path.join(session_upload_dir, "extracted")
             _safe_extract_zip(file_path, extract_dir)
 
-            # 运行分析
+            # 杩愯鍒嗘瀽
             analyzer = PackageAnalyzer(extract_dir)
             report = analyzer.analyze()
             
-            # 根据检测到的格式确定可用的目标格式
-            # 逻辑：
-            # 1. 识别源格式 (可能包含多个)
-            # 2. 如果包含 ItemsAdder -> 允许转为 CraftEngine (除非已包含 CraftEngine)
-            # 3. 如果包含 CraftEngine -> 暂无转换 (或允许转为 ItemsAdder)
-            # 4. 如果包含 Nexo -> 暂无转换
+            # 鏍规嵁妫€娴嬪埌鐨勬牸寮忕‘瀹氬彲鐢ㄧ殑鐩爣鏍煎紡
+            # 閫昏緫锛?
+            # 1. 璇嗗埆婧愭牸寮?(鍙兘鍖呭惈澶氫釜)
+            # 2. 濡傛灉鍖呭惈 ItemsAdder -> 鍏佽杞负 CraftEngine (闄ら潪宸插寘鍚?CraftEngine)
+            # 3. 濡傛灉鍖呭惈 CraftEngine -> 鏆傛棤杞崲 (鎴栧厑璁歌浆涓?ItemsAdder)
+            # 4. 濡傛灉鍖呭惈 Nexo -> 鏆傛棤杞崲
             
             detected_formats = report["formats"]
             available_targets = []
@@ -151,7 +152,7 @@ def analyze():
             
             if "ItemsAdder" in detected_formats:
                 if "CraftEngine" in detected_formats:
-                    warnings.append("检测到包中已包含 CraftEngine 配置。转换可能会覆盖或产生冲突。")
+                    warnings.append("Detected existing CraftEngine config. Conversion may overwrite or conflict.")
                 if "CraftEngine" not in available_targets:
                     available_targets.append("CraftEngine")
                 if "Nexo" not in available_targets:
@@ -161,11 +162,11 @@ def analyze():
             
             if "Nexo" in detected_formats:
                 if "CraftEngine" in detected_formats:
-                    warnings.append("检测到包中已包含 CraftEngine 配置。转换可能会覆盖或产生冲突。")
+                    warnings.append("Detected existing CraftEngine config. Conversion may overwrite or conflict.")
                 if "CraftEngine" not in available_targets:
                     available_targets.append("CraftEngine")
                 if "ItemsAdder" in detected_formats:
-                    warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
+                    warnings.append("Detected existing ItemsAdder config. Conversion may overwrite or conflict.")
                 if "ItemsAdder" not in available_targets:
                     available_targets.append("ItemsAdder")
                 if "Oraxen" not in available_targets:
@@ -173,7 +174,7 @@ def analyze():
 
             if "Oraxen" in detected_formats:
                 if "ItemsAdder" in detected_formats:
-                    warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
+                    warnings.append("Detected existing ItemsAdder config. Conversion may overwrite or conflict.")
                 if "ItemsAdder" not in available_targets:
                     available_targets.append("ItemsAdder")
                 if "CraftEngine" not in available_targets:
@@ -183,21 +184,39 @@ def analyze():
                 
             if "CraftEngine" in detected_formats:
                 if "ItemsAdder" in detected_formats:
-                    warnings.append("检测到包中已包含 ItemsAdder 配置。转换可能会覆盖或产生冲突。")
+                    warnings.append("Detected existing ItemsAdder config. Conversion may overwrite or conflict.")
                 if "ItemsAdder" not in available_targets:
                     available_targets.append("ItemsAdder")
                 if "Nexo" in detected_formats:
-                    warnings.append("检测到包中已包含 Nexo 配置。转换可能会覆盖或产生冲突。")
+                    warnings.append("Detected existing Nexo config. Conversion may overwrite or conflict.")
                 if "Nexo" not in available_targets:
                     available_targets.append("Nexo")
                 if "Oraxen" not in available_targets:
                     available_targets.append("Oraxen")
 
-            report["source_formats"] = detected_formats # 改名以反映复数
+            report["source_formats"] = detected_formats # 鏀瑰悕浠ュ弽鏄犲鏁?
             report["available_targets"] = available_targets
             report["warnings"] = warnings
             report["filename"] = filename
             report["supported_plugins"] = SUPPORTED_PLUGINS
+            report["itemsadder_packages"] = []
+            report["batch_mode"] = False
+
+            if "ItemsAdder" in detected_formats:
+                try:
+                    ia_packages = _load_itemsadder_packages(extract_dir)
+                    report["itemsadder_packages"] = [
+                        {
+                            "source_namespace": package.get("namespace", "converted"),
+                            "target_namespace": package.get("namespace", "converted"),
+                            "item_count": len(package.get("data", {}).get("items", {}) or {}),
+                            "has_resourcepack": bool(package.get("resourcepack_path")),
+                        }
+                        for package in ia_packages
+                    ]
+                    report["batch_mode"] = len(report["itemsadder_packages"]) > 1
+                except Exception as e:
+                    print(f"Error loading ItemsAdder batch metadata: {e}")
             
             return jsonify({
                 'status': 'success',
@@ -212,31 +231,31 @@ def analyze():
 
 @app.route('/api/convert', methods=['POST'])
 def convert():
-    # 支持两种模式：
-    # 1. 传统的直接上传文件并转换 (保持兼容)
-    # 2. 接受 session_id (从 /api/analyze 获取) 进行转换
+    # 鏀寔涓ょ妯″紡锛?
+    # 1. 浼犵粺鐨勭洿鎺ヤ笂浼犳枃浠跺苟杞崲 (淇濇寔鍏煎)
+    # 2. 鎺ュ彈 session_id (浠?/api/analyze 鑾峰彇) 杩涜杞崲
     
     session_id = request.form.get('session_id')
-    target_format = request.form.get('target_format', 'CraftEngine') # 默认 CE
-    source_format = request.form.get('source_format') # 新增: 明确源格式
+    target_format = request.form.get('target_format', 'CraftEngine') # 榛樿 CE
+    source_format = request.form.get('source_format') # 鏂板: 鏄庣‘婧愭牸寮?
     
     if session_id:
         if not _is_valid_session_id(session_id):
-            return jsonify({'error': '无效的会话 ID'}), 400
-        # 使用已存在的会话
+            return jsonify({'error': '鏃犳晥鐨勪細璇?ID'}), 400
+        # 浣跨敤宸插瓨鍦ㄧ殑浼氳瘽
         session_upload_dir = _safe_join_under(app.config['UPLOAD_FOLDER'], session_id)
         extract_dir = _safe_join_under(session_upload_dir, "extracted")
         if not os.path.exists(extract_dir):
-            return jsonify({'error': '会话已过期或不存在'}), 400
+            return jsonify({'error': 'Session expired or not found'}), 400
             
         session_output_dir = _safe_join_under(app.config['OUTPUT_FOLDER'], session_id)
         os.makedirs(session_output_dir, exist_ok=True)
         
     elif 'file' in request.files:
-        # 传统模式
+        # 浼犵粺妯″紡
         file = request.files['file']
         if file.filename == '':
-            return jsonify({'error': '未选择文件'}), 400
+            return jsonify({'error': '鏈€夋嫨鏂囦欢'}), 400
             
         session_id = str(uuid.uuid4())
         session_upload_dir = _safe_join_under(app.config['UPLOAD_FOLDER'], session_id)
@@ -251,7 +270,7 @@ def convert():
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
     else:
-        return jsonify({'error': '无效的请求'}), 400
+        return jsonify({'error': 'Invalid request'}), 400
 
     try:
         if target_format == "CraftEngine":
@@ -260,7 +279,6 @@ def convert():
             if source_format == "Oraxen":
                 return _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
             else:
-                # 默认为 ItemsAdder 或显式指定
                 return _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
 
         if target_format == "ItemsAdder":
@@ -270,7 +288,7 @@ def convert():
                 return _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Nexo":
                 return _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
-            return jsonify({'error': '目前仅支持 CraftEngine/Oraxen/Nexo -> ItemsAdder'}), 400
+            return jsonify({'error': '鐩墠浠呮敮鎸?CraftEngine/Oraxen/Nexo -> ItemsAdder'}), 400
 
         if target_format == "Nexo":
             if source_format == "CraftEngine":
@@ -279,7 +297,7 @@ def convert():
                 return _convert_oraxen_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "ItemsAdder" or not source_format:
                 return _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
-            return jsonify({'error': '目前仅支持 CraftEngine/ItemsAdder -> Nexo'}), 400
+            return jsonify({'error': '鐩墠浠呮敮鎸?CraftEngine/ItemsAdder -> Nexo'}), 400
 
         if target_format == "Oraxen":
             if source_format == "CraftEngine":
@@ -288,9 +306,9 @@ def convert():
                 return _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "ItemsAdder" or not source_format:
                 return _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
-            return jsonify({'error': '目前仅支持 CraftEngine/Nexo/ItemsAdder -> Oraxen'}), 400
+            return jsonify({'error': '鐩墠浠呮敮鎸?CraftEngine/Nexo/ItemsAdder -> Oraxen'}), 400
         
-        return jsonify({'error': f'不支持的目标格式: {target_format}'}), 400
+        return jsonify({'error': f'涓嶆敮鎸佺殑鐩爣鏍煎紡: {target_format}'}), 400
 
     except Exception as e:
         import traceback
@@ -415,7 +433,7 @@ def _resolve_nexo_namespace(nexo_data, fallback_namespace, nexo_resourcepack_pat
     return fallback_namespace
 
 def _is_safe_member_path(base_dir, member_name):
-    # 防止 zip 路径穿越，确保条目解压后仍位于目标目录
+    # 闃叉 zip 璺緞绌胯秺锛岀‘淇濇潯鐩В鍘嬪悗浠嶄綅浜庣洰鏍囩洰褰?
     base_path = os.path.abspath(base_dir)
     normalized_member = os.path.normpath(member_name.replace("\\", "/"))
     target_path = os.path.abspath(os.path.join(base_path, normalized_member))
@@ -431,11 +449,11 @@ def _safe_extract_zip(zip_file_path, destination_dir):
             if not name:
                 continue
             if not _is_safe_member_path(destination_dir, name):
-                raise ValueError(f"检测到不安全的压缩条目: {name}")
+                raise ValueError(f"妫€娴嬪埌涓嶅畨鍏ㄧ殑鍘嬬缉鏉＄洰: {name}")
             zip_ref.extract(member, destination_dir)
 
 def _find_resourcepack_root(search_dir):
-    # 优先返回包含 assets 的目录，其次返回包含 models/textures 的目录
+    # 浼樺厛杩斿洖鍖呭惈 assets 鐨勭洰褰曪紝鍏舵杩斿洖鍖呭惈 models/textures 鐨勭洰褰?
     if not os.path.isdir(search_dir):
         return None
     if os.path.isdir(os.path.join(search_dir, "assets")):
@@ -486,7 +504,7 @@ def _collect_nexo_resourcepack_paths(base_pack_dir, temp_extract_root):
     return paths
 
 def _merge_nexo_resourcepacks(resourcepack_paths, merged_root):
-    # 将多个资源包目录按顺序叠加到同一目录，后者覆盖前者
+    # 灏嗗涓祫婧愬寘鐩綍鎸夐『搴忓彔鍔犲埌鍚屼竴鐩綍锛屽悗鑰呰鐩栧墠鑰?
     if not isinstance(resourcepack_paths, (list, tuple)) or not resourcepack_paths:
         return None
     os.makedirs(merged_root, exist_ok=True)
@@ -701,7 +719,7 @@ def _resolve_oraxen_output_namespace(merged_data, item_configs, oraxen_pack_path
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return None, jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return None, jsonify({'error': 'Invalid namespace'}), 400
         return user_namespace, None, None
 
     fallback_namespace = "converted"
@@ -714,56 +732,8 @@ def _resolve_oraxen_output_namespace(merged_data, item_configs, oraxen_pack_path
         namespace = "converted"
     return namespace, None, None
 
-def _load_itemsadder_package(extract_dir):
-    ia_items_configs = []
-    ia_font_image_configs = []
-    ia_categories_configs = []
-    ia_recipes_configs = []
-    ia_resourcepack_path = None
-
-    scan_root = extract_dir
-    for root, dirs, _ in os.walk(extract_dir):
-        for d in dirs:
-            if d.lower() == "itemsadder":
-                scan_root = os.path.join(root, d)
-                break
-        if scan_root != extract_dir:
-            break
-
-    for root, dirs, files in os.walk(scan_root):
-        dir_lookup = {d.lower(): d for d in dirs}
-        if ia_resourcepack_path is None:
-            if "resourcepack" in dir_lookup:
-                ia_resourcepack_path = os.path.join(root, dir_lookup["resourcepack"])
-            elif "assets" in dir_lookup:
-                ia_resourcepack_path = root
-            elif "models" in dir_lookup or "textures" in dir_lookup:
-                ia_resourcepack_path = root
-
-        for file_name in files:
-            if not file_name.endswith((".yml", ".yaml")):
-                continue
-            config_path = os.path.join(root, file_name)
-            try:
-                data = safe_load_yaml(config_path)
-            except Exception as e:
-                print(f"Error loading ItemsAdder config {config_path}: {e}")
-                continue
-            if not isinstance(data, dict):
-                continue
-            if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
-                ia_items_configs.append(config_path)
-            if "font_images" in data:
-                ia_font_image_configs.append(config_path)
-            if "categories" in data:
-                ia_categories_configs.append(config_path)
-            if "recipes" in data:
-                ia_recipes_configs.append(config_path)
-
-    if ia_resourcepack_path is None and (ia_items_configs or ia_font_image_configs):
-        ia_resourcepack_path = extract_dir
-
-    merged_data = {
+def _empty_itemsadder_data():
+    return {
         "items": {},
         "equipments": {},
         "armors_rendering": {},
@@ -776,48 +746,436 @@ def _load_itemsadder_package(extract_dir):
         "info": {},
     }
 
-    for config_path in ia_items_configs + [p for p in ia_font_image_configs if p not in ia_items_configs]:
-        data = safe_load_yaml(config_path)
-        if not isinstance(data, dict):
-            continue
-        if "info" in data and not merged_data["info"]:
-            merged_data["info"] = data["info"]
-        for section_name in ("items", "equipments", "armors_rendering", "legacy_armor_renderings", "templates", "font_images"):
-            section = data.get(section_name)
-            if isinstance(section, dict):
-                merged_data.setdefault(section_name, {}).update(section)
-        if isinstance(data.get("loots"), dict):
-            for loot_group, loot_group_data in data["loots"].items():
-                if isinstance(loot_group_data, dict):
-                    merged_data.setdefault("loots", {}).setdefault(loot_group, {}).update(loot_group_data)
+def _has_itemsadder_config_sections(data):
+    if not isinstance(data, dict):
+        return False
+    return any(
+        isinstance(data.get(section_name), dict)
+        for section_name in (
+            "items",
+            "equipments",
+            "armors_rendering",
+            "legacy_armor_renderings",
+            "templates",
+            "font_images",
+            "categories",
+            "recipes",
+            "loots",
+        )
+    )
 
-    for config_path in ia_categories_configs:
-        data = safe_load_yaml(config_path)
-        if not isinstance(data, dict):
-            continue
-        if "info" in data and not merged_data["info"]:
-            merged_data["info"] = data["info"]
-        if isinstance(data.get("categories"), dict):
-            merged_data["categories"].update(data["categories"])
+def _merge_itemsadder_data(target, source):
+    if not isinstance(source, dict):
+        return
 
-    for config_path in ia_recipes_configs:
-        data = safe_load_yaml(config_path)
-        if not isinstance(data, dict):
-            continue
-        if "info" in data and not merged_data["info"]:
-            merged_data["info"] = data["info"]
-        recipes = data.get("recipes")
-        if not isinstance(recipes, dict):
-            continue
+    info = source.get("info")
+    if isinstance(info, dict) and not target.get("info"):
+        target["info"] = dict(info)
+
+    for section_name in (
+        "items",
+        "equipments",
+        "armors_rendering",
+        "legacy_armor_renderings",
+        "templates",
+        "font_images",
+        "categories",
+    ):
+        section = source.get(section_name)
+        if isinstance(section, dict):
+            target.setdefault(section_name, {}).update(section)
+
+    recipes = source.get("recipes")
+    if isinstance(recipes, dict):
         for group_key, group_data in recipes.items():
             if isinstance(group_data, dict):
-                merged_data["recipes"].setdefault(group_key, {}).update(group_data)
+                target.setdefault("recipes", {}).setdefault(group_key, {}).update(group_data)
 
+    loots = source.get("loots")
+    if isinstance(loots, dict):
+        for loot_group, loot_group_data in loots.items():
+            if isinstance(loot_group_data, dict):
+                target.setdefault("loots", {}).setdefault(loot_group, {}).update(loot_group_data)
+
+def _find_itemsadder_scan_root(extract_dir):
+    scan_root = extract_dir
+    for root, dirs, _ in os.walk(extract_dir):
+        for dir_name in dirs:
+            if dir_name.lower() == "itemsadder":
+                return os.path.join(root, dir_name)
+    return scan_root
+
+def _infer_itemsadder_package_root(config_path, scan_root):
+    try:
+        rel_path = os.path.relpath(config_path, scan_root)
+    except ValueError:
+        return scan_root
+
+    parts = os.path.normpath(rel_path).split(os.sep)
+    lowered = [part.lower() for part in parts]
+    if "contents" in lowered:
+        index = lowered.index("contents")
+        if index + 1 < len(parts):
+            return os.path.join(scan_root, *parts[:index + 2])
+    if "configs" in lowered:
+        index = lowered.index("configs")
+        if index > 0:
+            return os.path.join(scan_root, *parts[:index])
+    return scan_root
+
+def _infer_itemsadder_namespace_from_root(package_root, scan_root):
+    candidate = None
+    try:
+        rel_path = os.path.relpath(package_root, scan_root)
+        parts = [] if rel_path == "." else os.path.normpath(rel_path).split(os.sep)
+    except ValueError:
+        parts = []
+
+    lowered = [part.lower() for part in parts]
+    if "contents" in lowered:
+        index = lowered.index("contents")
+        if index + 1 < len(parts):
+            candidate = parts[index + 1]
+
+    if not candidate:
+        candidate = os.path.basename(package_root)
+
+    candidate = (candidate or "").strip().lower()
+    if candidate in {"", ".", "itemsadder", "configs", "resourcepack", "contents"}:
+        return None
+
+    candidate = re.sub(r'[^0-9a-z_.-]', '_', candidate)
+    return candidate if _is_valid_namespace(candidate) else None
+
+def _find_direct_itemsadder_resourcepack_path(search_dir):
+    if not os.path.isdir(search_dir):
+        return None
+    try:
+        dirs = [
+            name
+            for name in os.listdir(search_dir)
+            if os.path.isdir(os.path.join(search_dir, name))
+        ]
+    except OSError:
+        return None
+
+    dir_lookup = {name.lower(): name for name in dirs}
+    if "resourcepack" in dir_lookup:
+        return os.path.join(search_dir, dir_lookup["resourcepack"])
+    if "assets" in dir_lookup:
+        return search_dir
+    if any(name in dir_lookup for name in ("models", "textures", "sounds")):
+        return search_dir
+    return None
+
+def _find_itemsadder_resourcepack_path(search_dir):
+    direct = _find_direct_itemsadder_resourcepack_path(search_dir)
+    if direct:
+        return direct
+
+    for root, dirs, _ in os.walk(search_dir):
+        dir_lookup = {dir_name.lower(): dir_name for dir_name in dirs}
+        if "resourcepack" in dir_lookup:
+            return os.path.join(root, dir_lookup["resourcepack"])
+        if "assets" in dir_lookup:
+            return root
+        if any(name in dir_lookup for name in ("models", "textures", "sounds")):
+            return root
+    return None
+
+def _unique_existing_paths(paths):
+    result = []
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        normalized = os.path.normpath(path)
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+def _collect_itemsadder_resource_dirs(input_root, resource_type, namespace):
+    candidates = []
+    if namespace:
+        candidates.append(os.path.join(input_root, "assets", namespace, resource_type))
+        candidates.append(os.path.join(input_root, namespace, resource_type))
+
+    assets_root = os.path.join(input_root, "assets")
+    if os.path.isdir(assets_root):
+        for source_namespace in sorted(os.listdir(assets_root)):
+            namespace_root = os.path.join(assets_root, source_namespace)
+            if os.path.isdir(namespace_root):
+                candidates.append(os.path.join(namespace_root, resource_type))
+
+    candidates.append(os.path.join(input_root, resource_type))
+
+    dirs = []
+    for path in candidates:
+        if not os.path.isdir(path):
+            continue
+        normalized = os.path.normpath(path)
+        if normalized not in dirs:
+            dirs.append(normalized)
+    return dirs
+
+def _copy_tree_contents(src_root, dst_root):
+    for root, _, files in os.walk(src_root):
+        rel_dir = os.path.relpath(root, src_root)
+        target_dir = dst_root if rel_dir == "." else os.path.join(dst_root, rel_dir)
+        os.makedirs(target_dir, exist_ok=True)
+        for file_name in files:
+            shutil.copy2(os.path.join(root, file_name), os.path.join(target_dir, file_name))
+
+def _collect_itemsadder_sounds_json_paths(input_root, namespace):
+    candidates = []
+    if namespace:
+        candidates.append(os.path.join(input_root, "assets", namespace, "sounds.json"))
+        candidates.append(os.path.join(input_root, namespace, "sounds.json"))
+
+    assets_root = os.path.join(input_root, "assets")
+    if os.path.isdir(assets_root):
+        for source_namespace in sorted(os.listdir(assets_root)):
+            namespace_root = os.path.join(assets_root, source_namespace)
+            if os.path.isdir(namespace_root):
+                candidates.append(os.path.join(namespace_root, "sounds.json"))
+
+    candidates.append(os.path.join(input_root, "sounds.json"))
+    return _unique_existing_paths(candidates)
+
+def _merge_sounds_json_files(source_paths, output_path):
+    merged = {}
+    for source_path in _unique_existing_paths(source_paths):
+        try:
+            with open(source_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            merged.update(data)
+
+    if not merged:
+        return False
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+    return True
+
+def _merge_itemsadder_resourcepacks_for_namespace(resourcepack_paths, output_root, namespace):
+    if os.path.isdir(output_root):
+        shutil.rmtree(output_root, ignore_errors=True)
+
+    copied_any = False
+    sounds_json_paths = []
+    for input_root in _unique_existing_paths(resourcepack_paths):
+        for resource_type in ("models", "textures", "sounds"):
+            for src_dir in _collect_itemsadder_resource_dirs(input_root, resource_type, namespace):
+                dst_dir = os.path.join(output_root, "assets", namespace, resource_type)
+                _copy_tree_contents(src_dir, dst_dir)
+                copied_any = True
+        sounds_json_paths.extend(_collect_itemsadder_sounds_json_paths(input_root, namespace))
+
+    if _merge_sounds_json_files(sounds_json_paths, os.path.join(output_root, "assets", namespace, "sounds.json")):
+        copied_any = True
+    return output_root if copied_any else None
+
+def _itemsadder_resourcepack_needs_namespace_copy(resourcepack_path, namespace):
+    if not resourcepack_path or not os.path.isdir(resourcepack_path):
+        return False
+
+    assets_root = os.path.join(resourcepack_path, "assets")
+    if os.path.isdir(assets_root):
+        if os.path.isdir(os.path.join(assets_root, namespace)):
+            return False
+        try:
+            return any(
+                os.path.isdir(os.path.join(assets_root, name))
+                for name in os.listdir(assets_root)
+            )
+        except OSError:
+            return False
+
+    return any(
+        os.path.isdir(os.path.join(resourcepack_path, folder_name))
+        for folder_name in ("models", "textures", "sounds")
+    )
+
+def _prepare_itemsadder_resourcepack_path(resourcepack_paths, namespace, session_upload_dir, tag):
+    paths = _unique_existing_paths(resourcepack_paths)
+    if not paths:
+        return None
+
+    needs_merge = len(paths) > 1 or any(
+        _itemsadder_resourcepack_needs_namespace_copy(path, namespace)
+        for path in paths
+    )
+    if not needs_merge:
+        return paths[0]
+
+    safe_tag = re.sub(r'[^0-9A-Za-z_.-]', '_', tag or "itemsadder")
+    merged_root = _safe_join_under(session_upload_dir, f"_{safe_tag}_resourcepack")
+    return _merge_itemsadder_resourcepacks_for_namespace(paths, merged_root, namespace)
+
+def _load_itemsadder_packages(extract_dir):
+    scan_root = _find_itemsadder_scan_root(extract_dir)
+    packages = {}
+
+    for root, _, files in os.walk(scan_root):
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            config_path = os.path.join(root, file_name)
+            try:
+                data = safe_load_yaml(config_path)
+            except Exception as e:
+                print(f"Error loading ItemsAdder config {config_path}: {e}")
+                continue
+            if not _has_itemsadder_config_sections(data):
+                continue
+
+            package_root = _infer_itemsadder_package_root(config_path, scan_root)
+            package_key = os.path.normpath(package_root)
+            package = packages.setdefault(
+                package_key,
+                {
+                    "root": package_root,
+                    "data": _empty_itemsadder_data(),
+                    "item_configs": [],
+                    "font_image_configs": [],
+                    "categories_configs": [],
+                    "recipes_configs": [],
+                },
+            )
+            _merge_itemsadder_data(package["data"], data)
+
+            if any(
+                isinstance(data.get(section_name), dict)
+                for section_name in (
+                    "items",
+                    "equipments",
+                    "armors_rendering",
+                    "legacy_armor_renderings",
+                    "templates",
+                )
+            ):
+                package["item_configs"].append(config_path)
+            if isinstance(data.get("font_images"), dict):
+                package["font_image_configs"].append(config_path)
+            if isinstance(data.get("categories"), dict):
+                package["categories_configs"].append(config_path)
+            if isinstance(data.get("recipes"), dict):
+                package["recipes_configs"].append(config_path)
+
+    direct_scan_resourcepack = _find_direct_itemsadder_resourcepack_path(scan_root)
+    result = []
+    for package_key in sorted(packages.keys()):
+        package = packages[package_key]
+        path_namespace = _infer_itemsadder_namespace_from_root(package["root"], scan_root)
+        info = package["data"].get("info") if isinstance(package["data"].get("info"), dict) else {}
+        info_namespace = info.get("namespace") if isinstance(info, dict) else None
+        namespace = info_namespace if _is_valid_namespace(info_namespace) else path_namespace
+        if not _is_valid_namespace(namespace):
+            namespace = "converted"
+
+        package["namespace"] = namespace
+        package["original_namespace"] = namespace
+        package["data"].setdefault("info", {})["namespace"] = namespace
+
+        resourcepack_path = _find_itemsadder_resourcepack_path(package["root"])
+        if resourcepack_path is None and package["root"] != scan_root:
+            resourcepack_path = direct_scan_resourcepack
+        if resourcepack_path is None and (package["item_configs"] or package["font_image_configs"]):
+            resourcepack_path = package["root"]
+        package["resourcepack_path"] = resourcepack_path
+        result.append(package)
+
+    return result
+
+def _get_itemsadder_namespace_overrides():
+    raw_value = request.form.get("namespace_overrides")
+    if not raw_value:
+        return {}, None
+
+    try:
+        data = json.loads(raw_value)
+    except (TypeError, ValueError):
+        return None, (jsonify({'error': 'Invalid namespace overrides'}), 400)
+
+    if not isinstance(data, dict):
+        return None, (jsonify({'error': 'Invalid namespace overrides'}), 400)
+
+    overrides = {}
+    for source_namespace, target_namespace in data.items():
+        if not isinstance(source_namespace, str):
+            continue
+        if target_namespace is None:
+            continue
+        target_namespace = str(target_namespace).strip()
+        if not target_namespace:
+            continue
+        if not _is_valid_namespace(target_namespace):
+            return None, (jsonify({'error': f'Invalid namespace: {target_namespace}'}), 400)
+        overrides[source_namespace] = target_namespace
+    return overrides, None
+
+def _build_itemsadder_conversion_packages(packages, user_namespace, session_upload_dir, tag, namespace_overrides=None):
+    namespace_overrides = namespace_overrides or {}
+    grouped = {}
+    for package in packages:
+        source_namespace = package.get("namespace") or "converted"
+        namespace = namespace_overrides.get(source_namespace) or user_namespace or source_namespace
+        if not _is_valid_namespace(namespace):
+            namespace = "converted"
+
+        grouped_package = grouped.setdefault(
+            namespace,
+            {
+                "namespace": namespace,
+                "data": _empty_itemsadder_data(),
+                "item_configs": [],
+                "font_image_configs": [],
+                "resourcepack_paths": [],
+                "source_namespaces": [],
+            },
+        )
+        _merge_itemsadder_data(grouped_package["data"], package.get("data", {}))
+        grouped_package["data"].setdefault("info", {})["namespace"] = namespace
+        grouped_package["item_configs"].extend(package.get("item_configs", []))
+        grouped_package["font_image_configs"].extend(package.get("font_image_configs", []))
+        grouped_package["source_namespaces"].append(source_namespace)
+        if package.get("resourcepack_path"):
+            grouped_package["resourcepack_paths"].append(package["resourcepack_path"])
+
+    result = []
+    for namespace, package in grouped.items():
+        package["resourcepack_path"] = _prepare_itemsadder_resourcepack_path(
+            package["resourcepack_paths"],
+            namespace,
+            session_upload_dir,
+            f"{tag}_{namespace}",
+        )
+        result.append(package)
+    return result
+
+def _load_itemsadder_package(extract_dir):
+    packages = _load_itemsadder_packages(extract_dir)
+    merged_data = _empty_itemsadder_data()
+    ia_items_configs = []
+    resourcepack_paths = []
     original_namespace = "converted"
-    if isinstance(merged_data.get("info"), dict):
-        original_namespace = merged_data["info"].get("namespace") or original_namespace
+
+    for index, package in enumerate(packages):
+        _merge_itemsadder_data(merged_data, package.get("data", {}))
+        ia_items_configs.extend(package.get("item_configs", []))
+        if package.get("resourcepack_path"):
+            resourcepack_paths.append(package["resourcepack_path"])
+        if index == 0:
+            original_namespace = package.get("namespace") or original_namespace
+
     if not _is_valid_namespace(original_namespace):
         original_namespace = "converted"
+
+    unique_resourcepack_paths = _unique_existing_paths(resourcepack_paths)
+    ia_resourcepack_path = unique_resourcepack_paths[0] if len(unique_resourcepack_paths) == 1 else None
 
     return merged_data, ia_resourcepack_path, ia_items_configs, original_namespace
 
@@ -935,12 +1293,12 @@ def _convert_ce_to_ia(extract_dir, session_output_dir, session_upload_dir, targe
                 ce_config_entries.append((config_path, ce_data))
 
     if not ce_config_entries:
-        return jsonify({'error': '未能找到 CraftEngine 配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 CraftEngine 閰嶇疆鏂囦欢'}), 400
 
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace_map = {user_namespace: {}}
         for _, ce_data in ce_config_entries:
             _merge_ce_data(namespace_map[user_namespace], ce_data)
@@ -993,12 +1351,12 @@ def _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, tar
                 ce_config_entries.append((config_path, ce_data))
 
     if not ce_config_entries:
-        return jsonify({'error': '未能找到 CraftEngine 配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 CraftEngine 閰嶇疆鏂囦欢'}), 400
 
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace_map = {user_namespace: {}}
         for _, ce_data in ce_config_entries:
             _merge_ce_data(namespace_map[user_namespace], ce_data)
@@ -1028,13 +1386,13 @@ def _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, tar
     return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
 
 def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
-    # 1. 扫描 Nexo 配置和资源
+    # 1. 鎵弿 Nexo 閰嶇疆鍜岃祫婧?
     nexo_items_configs = []
     nexo_resourcepack_path = None
     nexo_resourcepack_paths = []
     merged_nexo_resourcepack_path = None
     
-    # 尝试找到 Nexo 根目录
+    # 灏濊瘯鎵惧埌 Nexo 鏍圭洰褰?
     scan_root = extract_dir
     for root, dirs, files in os.walk(extract_dir):
         if "Nexo" in dirs:
@@ -1044,9 +1402,9 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
              scan_root = os.path.join(root, "nexo")
              break
 
-    # 扫描配置和资源
+    # 鎵弿閰嶇疆鍜岃祫婧?
     for root, dirs, files in os.walk(scan_root):
-        # 资源包检测（大小写无关）
+        # 璧勬簮鍖呮娴嬶紙澶у皬鍐欐棤鍏筹級
         if nexo_resourcepack_path is None:
             dir_lookup = {d.lower(): d for d in dirs}
             if "pack" in dir_lookup:
@@ -1054,16 +1412,16 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
             elif "assets" in dir_lookup:
                 nexo_resourcepack_path = root
              
-        # 配置文件检测
+        # 閰嶇疆鏂囦欢妫€娴?
         for f in files:
             if f.endswith((".yml", ".yaml")):
                 full_path = os.path.join(root, f)
-                # 简单过滤，避免加载非配置
+                # 绠€鍗曡繃婊わ紝閬垮厤鍔犺浇闈為厤缃?
                 if "config.yml" in f: continue
                 nexo_items_configs.append(full_path)
 
     if not nexo_items_configs:
-         return jsonify({'error': '未能找到 Nexo 配置文件'}), 400
+         return jsonify({'error': '鏈兘鎵惧埌 Nexo 閰嶇疆鏂囦欢'}), 400
 
     if nexo_resourcepack_path:
         external_extract_root = os.path.join(session_upload_dir, "_nexo_external_packs_ce")
@@ -1075,13 +1433,12 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
         nexo_resourcepack_paths = _collect_nexo_resourcepack_paths(nexo_resourcepack_path, external_extract_root)
         merged_nexo_resourcepack_path = _merge_nexo_resourcepacks(nexo_resourcepack_paths, merged_pack_root)
 
-    # 2. 运行转换
-    # 准备命名空间
+    # 2. 杩愯杞崲
+    # 鍑嗗鍛藉悕绌洪棿
     user_namespace = request.form.get('namespace')
     
     if user_namespace and re.match(r'^[0-9a-z_.-]+$', user_namespace):
-        # 用户指定了命名空间，合并所有配置
-        converter = NexoConverter()
+        # 鐢ㄦ埛鎸囧畾浜嗗懡鍚嶇┖闂达紝鍚堝苟鎵€鏈夐厤缃?        converter = NexoConverter()
         converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
         merged_data = {}
         for config_path in nexo_items_configs:
@@ -1091,7 +1448,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
         
         namespace = user_namespace
         ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
-        ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
+        ce_config_dir = os.path.join(ce_output_base, "configuration")
         ce_res_dir = os.path.join(ce_output_base, "resourcepack")
 
         if merged_nexo_resourcepack_path:
@@ -1123,7 +1480,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
             converter = NexoConverter()
             converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
             ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
-            ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
+            ce_config_dir = os.path.join(ce_output_base, "configuration")
             ce_res_dir = os.path.join(ce_output_base, "resourcepack")
 
             if merged_nexo_resourcepack_path:
@@ -1134,7 +1491,7 @@ def _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, tar
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format)
 
-def _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
+def _convert_ia_to_nexo_legacy(extract_dir, session_output_dir, session_upload_dir, target_format):
     ia_items_configs = []
     ia_categories_configs = []
     ia_recipes_configs = []
@@ -1183,7 +1540,7 @@ def _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, tar
         ia_resourcepack_path = extract_dir
 
     if not ia_items_configs:
-        return jsonify({'error': '未能找到包含物品定义的 ItemsAdder 配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌鍖呭惈鐗╁搧瀹氫箟鐨?ItemsAdder 閰嶇疆鏂囦欢'}), 400
 
     merged_data = {
         "items": {},
@@ -1248,7 +1605,7 @@ def _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, tar
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace = user_namespace
     else:
         namespace = original_namespace
@@ -1286,16 +1643,49 @@ def _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, tar
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
 
-def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
-    # 3. 定位配置和资源 (ItemsAdder -> CraftEngine 逻辑)
-    # 改进逻辑: 扫描所有 YAML 文件并根据内容进行分类
-    ia_items_configs = []
+def _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
+    packages = _load_itemsadder_packages(extract_dir)
+    if not any(package.get("item_configs") for package in packages):
+        return jsonify({'error': 'No ItemsAdder item config files found'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace and not _is_valid_namespace(user_namespace):
+        return jsonify({'error': 'Invalid namespace'}), 400
+    namespace_overrides, error_response = _get_itemsadder_namespace_overrides()
+    if error_response:
+        return error_response
+
+    conversion_packages = _build_itemsadder_conversion_packages(
+        packages,
+        None if namespace_overrides else user_namespace,
+        session_upload_dir,
+        "ia_to_nexo",
+        namespace_overrides=namespace_overrides,
+    )
+    nexo_root = os.path.join(session_output_dir, "Nexo")
+    nexo_items_dir = os.path.join(nexo_root, "items")
+    nexo_pack_dir = os.path.join(nexo_root, "pack")
+
+    for package in conversion_packages:
+        if not package.get("item_configs"):
+            continue
+        converter = IAToNexoConverter()
+        if package.get("resourcepack_path"):
+            converter.set_resource_paths(package["resourcepack_path"], nexo_pack_dir)
+        converter.convert(package["data"], namespace=package["namespace"])
+        converter.save_config(nexo_items_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
+
+def _convert_ia_to_ce_legacy(extract_dir, session_output_dir, session_upload_dir, target_format):
+    # 3. 瀹氫綅閰嶇疆鍜岃祫婧?(ItemsAdder -> CraftEngine 閫昏緫)
+    # 鏀硅繘閫昏緫: 鎵弿鎵€鏈?YAML 鏂囦欢骞舵牴鎹唴瀹硅繘琛屽垎绫?    ia_items_configs = []
     ia_font_image_configs = []
     ia_categories_configs = []
     ia_recipes_configs = []
     ia_resourcepack_path = None
 
-    # 0. 确定扫描根目录
+    # 0. 纭畾鎵弿鏍圭洰褰?
     scan_root = extract_dir
     found_ia_dir = False
     for root, dirs, files in os.walk(extract_dir):
@@ -1310,22 +1700,22 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
     if found_ia_dir:
             print(f"Detected ItemsAdder root at: {scan_root}")
 
-    # 第一遍扫描：查找配置文件和标准资源包结构
+    # 绗竴閬嶆壂鎻忥細鏌ユ壘閰嶇疆鏂囦欢鍜屾爣鍑嗚祫婧愬寘缁撴瀯
     for root, dirs, files in os.walk(scan_root):
-        # --- 资源包检测 ---
-        # 优先级 1: 显式的 "resourcepack" 目录
+        # --- 璧勬簮鍖呮娴?---
+        # 浼樺厛绾?1: 鏄惧紡鐨?"resourcepack" 鐩綍
         if "resourcepack" in dirs and ia_resourcepack_path is None:
             ia_resourcepack_path = os.path.join(root, "resourcepack")
         
-        # 优先级 2: 直接包含 assets 的目录
+        # 浼樺厛绾?2: 鐩存帴鍖呭惈 assets 鐨勭洰褰?
         if "assets" in dirs and ia_resourcepack_path is None:
             ia_resourcepack_path = root
 
-        # 优先级 3: 直接包含 models 和 textures 的目录 (非标准结构)
+        # 浼樺厛绾?3: 鐩存帴鍖呭惈 models 鍜?textures 鐨勭洰褰?(闈炴爣鍑嗙粨鏋?
         if "models" in dirs and "textures" in dirs and ia_resourcepack_path is None:
             ia_resourcepack_path = root
 
-        # --- 配置文件检测 ---
+        # --- 閰嶇疆鏂囦欢妫€娴?---
         for f in files:
             if f.endswith(".yml") or f.endswith(".yaml"):
                 full_path = os.path.join(root, f)
@@ -1335,8 +1725,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
                     if not data:
                         continue
                     
-                    # 检查关键签名
-                    if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
+                    # 妫€鏌ュ叧閿鍚?                    if "items" in data or "equipments" in data or "armors_rendering" in data or "legacy_armor_renderings" in data:
                         ia_items_configs.append(full_path)
                     if "font_images" in data:
                         ia_font_image_configs.append(full_path)
@@ -1348,20 +1737,20 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
                     print(f"Error loading {full_path}: {e}")
                     continue
 
-    # 如果仍未找到资源包，尝试寻找 textures/models 的父级 (处理非标准结构)
+    # 濡傛灉浠嶆湭鎵惧埌璧勬簮鍖咃紝灏濊瘯瀵绘壘 textures/models 鐨勭埗绾?(澶勭悊闈炴爣鍑嗙粨鏋?
     if ia_resourcepack_path is None:
-        # 如果有配置文件，默认为提取根目录
+        # 濡傛灉鏈夐厤缃枃浠讹紝榛樿涓烘彁鍙栨牴鐩綍
         if ia_items_configs or ia_font_image_configs:
             ia_resourcepack_path = extract_dir
 
     if not ia_items_configs and not ia_font_image_configs:
-            return jsonify({'error': '未能找到包含物品或 GUI 定义的配置文件 (items/equipments/font_images)'}), 400
+            return jsonify({'error': '鏈兘鎵惧埌鍖呭惈鐗╁搧鎴?GUI 瀹氫箟鐨勯厤缃枃浠?(items/equipments/font_images)'}), 400
 
-    # 4. 运行转换
+    # 4. 杩愯杞崲
     converter = IAConverter()
     converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
     
-    # 加载并合并所有物品配置
+    # 鍔犺浇骞跺悎骞舵墍鏈夌墿鍝侀厤缃?
     merged_items_data = {
         "items": {},
         "equipments": {},
@@ -1378,9 +1767,9 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
         data = converter.load_config(config_path)
         if not data: continue
         
-        # 合并逻辑
+        # 鍚堝苟閫昏緫
         if "info" in data and not merged_items_data["info"]:
-            merged_items_data["info"] = data["info"] # 使用找到的第一个 info
+            merged_items_data["info"] = data["info"] # 浣跨敤鎵惧埌鐨勭涓€涓?info
         
         if "items" in data:
             merged_items_data.setdefault("items", {}).update(data["items"])
@@ -1418,7 +1807,7 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
 
     ia_data = merged_items_data
     
-    # 如果找到则加载分类
+    # 濡傛灉鎵惧埌鍒欏姞杞藉垎绫?
     if ia_categories_configs:
         merged_categories = {}
         for cat_config in ia_categories_configs:
@@ -1448,49 +1837,49 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
         if merged_recipes:
             ia_data["recipes"] = merged_recipes
 
-    # 准备输出路径
-    # CraftEngine 输出结构: resources/<namespace>/...
-    # 使用配置中的命名空间或默认值
+    # 鍑嗗杈撳嚭璺緞
+    # CraftEngine 杈撳嚭缁撴瀯: resources/<namespace>/...
+    # 浣跨敤閰嶇疆涓殑鍛藉悕绌洪棿鎴栭粯璁ゅ€?
     original_namespace = ia_data.get("info", {}).get("namespace", "converted")
     namespace = original_namespace
     
-    # 检查用户是否指定了命名空间
+    # 妫€鏌ョ敤鎴锋槸鍚︽寚瀹氫簡鍛藉悕绌洪棿
     user_namespace = request.form.get('namespace')
     if user_namespace:
-        # 验证命名空间规则: 0-9, a-z, _, -, .
+        # 楠岃瘉鍛藉悕绌洪棿瑙勫垯: 0-9, a-z, _, -, .
         if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace = user_namespace
 
-    # 特殊处理：如果资源包结构是非标准的（直接包含 models/textures），则重组为标准结构
-    # 这通常发生在 ia_resourcepack_path 指向了包含 models/textures 的根目录，但缺少 assets/<namespace> 包装的情况
+    # 鐗规畩澶勭悊锛氬鏋滆祫婧愬寘缁撴瀯鏄潪鏍囧噯鐨勶紙鐩存帴鍖呭惈 models/textures锛夛紝鍒欓噸缁勪负鏍囧噯缁撴瀯
+    # 杩欓€氬父鍙戠敓鍦?ia_resourcepack_path 鎸囧悜浜嗗寘鍚?models/textures 鐨勬牴鐩綍锛屼絾缂哄皯 assets/<namespace> 鍖呰鐨勬儏鍐?
     if ia_resourcepack_path and os.path.exists(ia_resourcepack_path):
-        # 检查标准结构是否存在
+        # 妫€鏌ユ爣鍑嗙粨鏋勬槸鍚﹀瓨鍦?
         assets_path = os.path.join(ia_resourcepack_path, "assets")
         if not os.path.exists(assets_path):
-            # 检查是否有models 或 textures
+            # 妫€鏌ユ槸鍚︽湁models 鎴?textures
             has_models = os.path.exists(os.path.join(ia_resourcepack_path, "models"))
             has_textures = os.path.exists(os.path.join(ia_resourcepack_path, "textures"))
             
             if has_models or has_textures:
-                print(f"检测到非标准资源包结构，正在重组为 assets/{namespace}/...")
-                # 创建一个新的临时目录作为资源包根目录，以避免污染原始提取目录或处理路径冲突
+                print(f"妫€娴嬪埌闈炴爣鍑嗚祫婧愬寘缁撴瀯锛屾鍦ㄩ噸缁勪负 assets/{namespace}/...")
+                # 鍒涘缓涓€涓柊鐨勪复鏃剁洰褰曚綔涓鸿祫婧愬寘鏍圭洰褰曪紝浠ラ伩鍏嶆薄鏌撳師濮嬫彁鍙栫洰褰曟垨澶勭悊璺緞鍐茬獊
                 restructured_root = os.path.join(session_upload_dir, "restructured_rp")
                 target_ns_dir = os.path.join(restructured_root, "assets", namespace)
                 os.makedirs(target_ns_dir, exist_ok=True)
                 
-                # 移动文件夹
+                # 绉诲姩鏂囦欢澶?
                 for folder_name in ["models", "textures", "sounds"]:
                     src_folder = os.path.join(ia_resourcepack_path, folder_name)
                     if os.path.exists(src_folder):
                         dst_folder = os.path.join(target_ns_dir, folder_name)
-                        # 移动文件夹
+                        # 绉诲姩鏂囦欢澶?
                         shutil.move(src_folder, dst_folder)
                 
-                # 更新资源包路径指向新的标准结构根目录
+                # 鏇存柊璧勬簮鍖呰矾寰勬寚鍚戞柊鐨勬爣鍑嗙粨鏋勬牴鐩綍
                 ia_resourcepack_path = restructured_root
         else:
-            # 标准结构：如果命名空间改变，尝试重命名文件夹以匹配新的命名空间
+            # 鏍囧噯缁撴瀯锛氬鏋滃懡鍚嶇┖闂存敼鍙橈紝灏濊瘯閲嶅懡鍚嶆枃浠跺す浠ュ尮閰嶆柊鐨勫懡鍚嶇┖闂?
             if namespace != original_namespace:
                 src_ns_path = os.path.join(assets_path, original_namespace)
                 dst_ns_path = os.path.join(assets_path, namespace)
@@ -1502,10 +1891,10 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
                         print(f"Warning: Failed to rename namespace folder: {e}")
     
     ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
-    ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
+    ce_config_dir = os.path.join(ce_output_base, "configuration")
     ce_res_dir = os.path.join(ce_output_base, "resourcepack")
     
-    # 如果找到 resourcepack 则设置资源路径
+    # 濡傛灉鎵惧埌 resourcepack 鍒欒缃祫婧愯矾寰?
     if ia_resourcepack_path:
         converter.set_resource_paths(ia_resourcepack_path, ce_res_dir)
 
@@ -1516,10 +1905,50 @@ def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, targe
     return _package_and_respond(session_output_dir, session_upload_dir, target_format)
 
 
+def _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
+    packages = _load_itemsadder_packages(extract_dir)
+    if not any(package.get("item_configs") or package.get("font_image_configs") for package in packages):
+        return jsonify({'error': 'No ItemsAdder item or GUI config files found'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace and not _is_valid_namespace(user_namespace):
+        return jsonify({'error': 'Invalid namespace'}), 400
+    namespace_overrides, error_response = _get_itemsadder_namespace_overrides()
+    if error_response:
+        return error_response
+
+    conversion_packages = _build_itemsadder_conversion_packages(
+        packages,
+        None if namespace_overrides else user_namespace,
+        session_upload_dir,
+        "ia_to_ce",
+        namespace_overrides=namespace_overrides,
+    )
+
+    for package in conversion_packages:
+        if not package.get("item_configs") and not package.get("font_image_configs"):
+            continue
+        namespace = package["namespace"]
+        converter = IAConverter()
+        converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
+
+        ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
+        ce_config_dir = os.path.join(ce_output_base, "configuration")
+        ce_res_dir = os.path.join(ce_output_base, "resourcepack")
+
+        if package.get("resourcepack_path"):
+            converter.set_resource_paths(package["resourcepack_path"], ce_res_dir)
+
+        converter.convert(package["data"], namespace=namespace)
+        converter.save_config(ce_config_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format)
+
+
 def _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
     merged_data, oraxen_pack_path, oraxen_item_configs = _load_oraxen_package(extract_dir)
     if not oraxen_item_configs:
-        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 Oraxen 鐗╁搧閰嶇疆鏂囦欢'}), 400
 
     namespace, error_response, status_code = _resolve_oraxen_output_namespace(
         merged_data,
@@ -1534,7 +1963,7 @@ def _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, t
     converter = IAConverter()
     converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
     ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
-    ce_config_dir = os.path.join(ce_output_base, "configuration", "items", namespace)
+    ce_config_dir = os.path.join(ce_output_base, "configuration")
     ce_res_dir = os.path.join(ce_output_base, "resourcepack")
 
     if oraxen_pack_path:
@@ -1549,7 +1978,7 @@ def _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, t
 def _convert_oraxen_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
     merged_data, oraxen_pack_path, oraxen_item_configs = _load_oraxen_package(extract_dir)
     if not oraxen_item_configs:
-        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 Oraxen 鐗╁搧閰嶇疆鏂囦欢'}), 400
 
     namespace, error_response, status_code = _resolve_oraxen_output_namespace(
         merged_data,
@@ -1575,15 +2004,15 @@ def _convert_oraxen_to_nexo(extract_dir, session_output_dir, session_upload_dir,
     return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
 
 
-def _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format):
+def _convert_ia_to_oraxen_legacy(extract_dir, session_output_dir, session_upload_dir, target_format):
     merged_data, ia_resourcepack_path, ia_items_configs, original_namespace = _load_itemsadder_package(extract_dir)
     if not ia_items_configs and not merged_data.get("font_images"):
-        return jsonify({'error': '未能找到包含物品定义的 ItemsAdder 配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌鍖呭惈鐗╁搧瀹氫箟鐨?ItemsAdder 閰嶇疆鏂囦欢'}), 400
 
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace = user_namespace
     else:
         namespace = original_namespace
@@ -1597,6 +2026,40 @@ def _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, t
 
     converter.convert(merged_data, namespace=namespace)
     converter.save_config(oraxen_root)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Oraxen")
+
+
+def _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format):
+    packages = _load_itemsadder_packages(extract_dir)
+    if not any(package.get("item_configs") or package.get("font_image_configs") for package in packages):
+        return jsonify({'error': 'No ItemsAdder item config files found'}), 400
+
+    user_namespace = request.form.get('namespace')
+    if user_namespace and not _is_valid_namespace(user_namespace):
+        return jsonify({'error': 'Invalid namespace'}), 400
+    namespace_overrides, error_response = _get_itemsadder_namespace_overrides()
+    if error_response:
+        return error_response
+
+    conversion_packages = _build_itemsadder_conversion_packages(
+        packages,
+        None if namespace_overrides else user_namespace,
+        session_upload_dir,
+        "ia_to_oraxen",
+        namespace_overrides=namespace_overrides,
+    )
+    oraxen_root = os.path.join(session_output_dir, "Oraxen")
+    oraxen_pack_dir = os.path.join(oraxen_root, "pack")
+
+    for package in conversion_packages:
+        if not package.get("item_configs") and not package.get("font_image_configs"):
+            continue
+        converter = IAToOraxenConverter()
+        if package.get("resourcepack_path"):
+            converter.set_resource_paths(package["resourcepack_path"], oraxen_pack_dir)
+        converter.convert(package["data"], namespace=package["namespace"])
+        converter.save_config(oraxen_root)
 
     return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Oraxen")
 
@@ -1628,12 +2091,12 @@ def _convert_ce_to_oraxen(extract_dir, session_output_dir, session_upload_dir, t
                 ce_config_entries.append((config_path, ce_data))
 
     if not ce_config_entries:
-        return jsonify({'error': '未能找到 CraftEngine 配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 CraftEngine 閰嶇疆鏂囦欢'}), 400
 
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace_map = {user_namespace: {}}
         for _, ce_data in ce_config_entries:
             _merge_ce_data(namespace_map[user_namespace], ce_data)
@@ -1708,7 +2171,7 @@ def _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir,
                 nexo_recipes_configs.append(full_path)
 
     if not nexo_items_configs:
-        return jsonify({'error': '未能找到 Nexo 物品配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 Nexo 鐗╁搧閰嶇疆鏂囦欢'}), 400
 
     if nexo_resourcepack_path:
         external_extract_root = os.path.join(session_upload_dir, "_nexo_external_packs_oraxen")
@@ -1719,7 +2182,7 @@ def _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir,
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not _is_valid_namespace(user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         namespace_map = {user_namespace: {"items": {}, "categories": {}, "recipes": {}}}
         for config_path in nexo_items_configs:
             data = safe_load_yaml(config_path)
@@ -1785,7 +2248,7 @@ def _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir,
 def _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
     merged_data, oraxen_pack_path, oraxen_item_configs = _load_oraxen_package(extract_dir)
     if not oraxen_item_configs:
-        return jsonify({'error': '未能找到 Oraxen 物品配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 Oraxen 鐗╁搧閰嶇疆鏂囦欢'}), 400
 
     namespace, error_response, status_code = _resolve_oraxen_output_namespace(
         merged_data,
@@ -1855,10 +2318,10 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
                 nexo_recipes_configs.append(full_path)
 
     if not nexo_items_configs:
-        return jsonify({'error': '未能找到 Nexo 物品配置文件'}), 400
+        return jsonify({'error': '鏈兘鎵惧埌 Nexo 鐗╁搧閰嶇疆鏂囦欢'}), 400
 
     if nexo_resourcepack_path:
-        # external_packs 会先解包到临时目录，再按顺序参与资源迁移
+        # external_packs 浼氬厛瑙ｅ寘鍒颁复鏃剁洰褰曪紝鍐嶆寜椤哄簭鍙備笌璧勬簮杩佺Щ
         external_extract_root = os.path.join(session_upload_dir, "_nexo_external_packs")
         if os.path.isdir(external_extract_root):
             shutil.rmtree(external_extract_root, ignore_errors=True)
@@ -1867,7 +2330,7 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
     user_namespace = request.form.get('namespace')
     if user_namespace:
         if not re.match(r'^[0-9a-z_.-]+$', user_namespace):
-            return jsonify({'error': '命名空间包含非法字符。仅允许小写字母、数字、下划线、连字符和英文句号。'}), 400
+            return jsonify({'error': 'Invalid namespace'}), 400
         merged_data = {"items": {}, "categories": {}, "recipes": {}}
         for config_path in nexo_items_configs:
             data = safe_load_yaml(config_path)
@@ -1943,15 +2406,14 @@ def _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, tar
     return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="ItemsAdder")
 
 def _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="CraftEngine"):
-    # 5. 压缩结果
+    # 5. 鍘嬬缉缁撴灉
     original_stem = _get_original_upload_stem(session_upload_dir)
     output_filename = _build_output_filename(original_stem, target_format)
     output_filename, output_zip_path = _next_available_output_path(output_filename)
-    # 我们希望压缩包解压后直接是 resources 文件夹，或者 CraftEngine 文件夹
-
+    # 鎴戜滑甯屾湜鍘嬬缉鍖呰В鍘嬪悗鐩存帴鏄?resources 鏂囦欢澶癸紝鎴栬€?CraftEngine 鏂囦欢澶?
     shutil.make_archive(output_zip_path[:-4], 'zip', session_output_dir, root_dir_name)
 
-    # 清理会话文件 
+    # 娓呯悊浼氳瘽鏂囦欢 
     # shutil.rmtree(session_upload_dir)
     # shutil.rmtree(session_output_dir)
 
@@ -1964,10 +2426,10 @@ def _package_and_respond(session_output_dir, session_upload_dir, target_format, 
 def download_file(filename):
     safe_name = secure_filename(filename or "")
     if not safe_name or safe_name != filename:
-        return jsonify({'error': '无效的文件名'}), 400
+        return jsonify({'error': '鏃犳晥鐨勬枃浠跺悕'}), 400
     file_path = _safe_join_under(app.config['OUTPUT_FOLDER'], safe_name)
     if not os.path.isfile(file_path):
-        return jsonify({'error': '文件不存在或已过期'}), 404
+        return jsonify({'error': 'File not found or expired'}), 404
     return send_file(file_path, as_attachment=True)
 
 import webbrowser
@@ -1979,21 +2441,21 @@ from threading import Timer, Lock
 
 @app.route('/api/shutdown', methods=['POST'])
 def shutdown():
-    """关闭服务器"""
+    """Shut down the server."""
     def kill():
-        # 强制退出进程 (os._exit 能够终止整个进程，而 sys.exit 在线程中只终止线程)
+        # 寮哄埗閫€鍑鸿繘绋?(os._exit 鑳藉缁堟鏁翠釜杩涚▼锛岃€?sys.exit 鍦ㄧ嚎绋嬩腑鍙粓姝㈢嚎绋?
         os._exit(0)
         
-    # 延迟 1 秒执行，以便返回响应给前端
+    # 寤惰繜 1 绉掓墽琛岋紝浠ヤ究杩斿洖鍝嶅簲缁欏墠绔?
     Timer(1.0, kill).start()
     return jsonify({'status': 'server shutting down...'})
 
 def open_browser():
     webbrowser.open_new('http://127.0.0.1:5000/')
 
-# 心跳全局状态
+# 蹇冭烦鍏ㄥ眬鐘舵€?
 last_heartbeat = time.time()
-HEARTBEAT_TIMEOUT = 15  # 秒，增加超时时间以允许更长的启动加载
+HEARTBEAT_TIMEOUT = 15  # 绉掞紝澧炲姞瓒呮椂鏃堕棿浠ュ厑璁告洿闀跨殑鍚姩鍔犺浇
 
 @app.route('/api/heartbeat', methods=['POST'])
 def heartbeat():
@@ -2002,28 +2464,29 @@ def heartbeat():
     return jsonify({'status': 'alive'})
 
 def check_heartbeat():
-    """监控心跳并在超时时关闭"""
+    """Monitor heartbeat and stop the server after timeout."""
     global last_heartbeat
     while True:
         time.sleep(1)
-        # 如果 TIMEOUT 秒内没有心跳，则关闭
+        # 濡傛灉 TIMEOUT 绉掑唴娌℃湁蹇冭烦锛屽垯鍏抽棴
         if time.time() - last_heartbeat > HEARTBEAT_TIMEOUT:
-            print("心跳超时。正在关闭服务器...")
-            # 使用 os._exit 从线程立即终止
+            print("蹇冭烦瓒呮椂銆傛鍦ㄥ叧闂湇鍔″櫒...")
+            # 浣跨敤 os._exit 浠庣嚎绋嬬珛鍗崇粓姝?
             os._exit(0)
 
 if __name__ == '__main__':
-    # 仅在非调试模式下打开浏览器 (重载会导致双重打开)
-    # 但对于打包的应用，调试通常为 False 或不相关。
+    # 浠呭湪闈炶皟璇曟ā寮忎笅鎵撳紑娴忚鍣?(閲嶈浇浼氬鑷村弻閲嶆墦寮€)
+    # 浣嗗浜庢墦鍖呯殑搴旂敤锛岃皟璇曢€氬父涓?False 鎴栦笉鐩稿叧銆?
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
         Timer(1.5, open_browser).start()
         
-        # 重置心跳计时器以避免在启动期间超时
+        # 閲嶇疆蹇冭烦璁℃椂鍣ㄤ互閬垮厤鍦ㄥ惎鍔ㄦ湡闂磋秴鏃?
         last_heartbeat = time.time()
         
-        # 启动心跳监控线程
+        # 鍚姩蹇冭烦鐩戞帶绾跨▼
         import threading
         monitor_thread = threading.Thread(target=check_heartbeat, daemon=True)
         monitor_thread.start()
         
     app.run(debug=False, port=5000)
+

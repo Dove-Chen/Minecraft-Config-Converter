@@ -106,6 +106,21 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('namespace', namespaceInput.value.trim());
         }
 
+        const batchNamespaceInputs = Array.from(document.querySelectorAll('.batch-namespace-input'));
+        if (batchNamespaceInputs.length > 0) {
+            const namespaceOverrides = {};
+            batchNamespaceInputs.forEach(input => {
+                const sourceNamespace = input.dataset.sourceNamespace;
+                const targetNamespace = input.value.trim();
+                if (sourceNamespace && targetNamespace) {
+                    namespaceOverrides[sourceNamespace] = targetNamespace;
+                }
+            });
+            if (Object.keys(namespaceOverrides).length > 0) {
+                formData.append('namespace_overrides', JSON.stringify(namespaceOverrides));
+            }
+        }
+
         const fixRotationsInput = document.getElementById('fix-illegal-model-rotations');
         if (fixRotationsInput && fixRotationsInput.checked) {
             formData.append('fix_illegal_model_rotations', '1');
@@ -162,6 +177,51 @@ document.addEventListener('DOMContentLoaded', () => {
             {id: "MythicCrucible", name: "MythicCrucible", icon: "⚔️"},
             {id: "HMCCosmetics", name: "HMCCosmetics", icon: "👒"}
         ];
+
+        const itemsAdderPackages = Array.isArray(report.itemsadder_packages) ? report.itemsadder_packages : [];
+        const hasItemsAdderBatch = itemsAdderPackages.length > 1;
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function generateBatchNamespaceList() {
+            if (!hasItemsAdderBatch) return '';
+            return `
+                <div class="batch-namespace-section" id="batch-namespace-section">
+                    <div class="batch-namespace-header">
+                        <span>批量命名空间</span>
+                        <span>${itemsAdderPackages.length} 个内容包</span>
+                    </div>
+                    <div class="batch-namespace-list">
+                        ${itemsAdderPackages.map(pkg => {
+                            const sourceNamespace = pkg.source_namespace || 'converted';
+                            const targetNamespace = pkg.target_namespace || sourceNamespace;
+                            return `
+                                <div class="batch-namespace-row">
+                                    <div class="batch-namespace-source">
+                                        <span class="batch-source-name">${escapeHtml(sourceNamespace)}</span>
+                                        <span class="batch-source-meta">${Number(pkg.item_count || 0)} items</span>
+                                    </div>
+                                    <input
+                                        type="text"
+                                        class="text-input batch-namespace-input"
+                                        data-source-namespace="${escapeHtml(sourceNamespace)}"
+                                        value="${escapeHtml(targetNamespace)}"
+                                        title="仅允许小写字母、数字、下划线、连字符和点"
+                                    >
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
 
         // 默认选择
         let selectedSource = report.source_formats[0] || null;
@@ -250,7 +310,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="value filename">${report.filename || '未知'}</span>
                     </div>
                     
-                    <div class="report-item">
+                    <div class="report-item" id="single-namespace-item">
                         <span class="label">命名空间 (可选):</span>
                         <input type="text" id="namespace-input" class="text-input" placeholder="留空使用默认值" title="仅允许小写字母、数字、下划线、连字符和点">
                     </div>
@@ -275,6 +335,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         </ul>
                     </div>
                 </div>
+                ${generateBatchNamespaceList()}
                 <div class="conversion-options" id="craftengine-options">
                     <label class="checkbox-option">
                         <input type="checkbox" id="fix-illegal-model-rotations" checked>
@@ -305,6 +366,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 craftEngineOptions.style.display = target === 'CraftEngine' ? 'flex' : 'none';
             }
         }
+
+        function syncBatchNamespaceList() {
+            const source = document.getElementById('selected-source').value;
+            const batchSection = document.getElementById('batch-namespace-section');
+            const singleNamespaceItem = document.getElementById('single-namespace-item');
+            const showBatch = hasItemsAdderBatch && source === 'ItemsAdder';
+            if (batchSection) {
+                batchSection.style.display = showBatch ? 'block' : 'none';
+            }
+            if (singleNamespaceItem) {
+                singleNamespaceItem.style.display = showBatch ? 'none' : 'block';
+            }
+        }
         
         sourceGrid.addEventListener('click', (e) => {
             const card = e.target.closest('.plugin-card.selectable');
@@ -313,6 +387,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('selected-source').value = id;
                 sourceGrid.querySelectorAll('.plugin-card').forEach(c => c.classList.remove('selected'));
                 card.classList.add('selected');
+                syncBatchNamespaceList();
             }
         });
         
@@ -329,6 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         
         syncConversionOptions();
+        syncBatchNamespaceList();
         document.getElementById('start-convert-btn').onclick = () => startConversion(sessionId);
     }
 

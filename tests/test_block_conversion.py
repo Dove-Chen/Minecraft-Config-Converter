@@ -93,7 +93,7 @@ class BlockConversionTests(unittest.TestCase):
         self.assertEqual(entry["item"], "testores:raw_ruby")
         self.assertEqual(entry["functions"][0]["count"], "1~2")
 
-    def test_craftengine_block_config_is_saved_under_blocks_directory(self):
+    def test_craftengine_block_config_is_saved_directly_under_configuration(self):
         converter = IAConverter()
         converter.convert(self._itemsadder_block_pack())
 
@@ -111,15 +111,10 @@ class BlockConversionTests(unittest.TestCase):
 
             package_root = Path(tmp) / "CraftEngine" / "resources" / "testores"
             self.assertTrue((package_root / "pack.yml").exists())
-            self.assertTrue(
-                (package_root / "configuration" / "items" / "testores" / "items.yml").exists()
-            )
-            self.assertTrue(
-                (package_root / "configuration" / "blocks" / "testores" / "blocks.yml").exists()
-            )
-            self.assertFalse(
-                (package_root / "configuration" / "items" / "testores" / "blocks.yml").exists()
-            )
+            self.assertTrue((package_root / "configuration" / "items.yml").exists())
+            self.assertTrue((package_root / "configuration" / "blocks.yml").exists())
+            self.assertFalse((package_root / "configuration" / "items").exists())
+            self.assertFalse((package_root / "configuration" / "blocks").exists())
 
     def test_craftengine_block_to_itemsadder_block(self):
         ce_data = {
@@ -260,8 +255,6 @@ class BlockConversionTests(unittest.TestCase):
                     / "resources"
                     / "testpack"
                     / "configuration"
-                    / "images"
-                    / "testpack"
                     / "images.yml"
                 ).exists()
             )

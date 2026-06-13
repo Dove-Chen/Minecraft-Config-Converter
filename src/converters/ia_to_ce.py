@@ -52,13 +52,19 @@ class IAConverter(BaseConverter):
             return fallback_dirs
 
         config_root = Path(*parts[:config_index + 1])
-        return {
-            "items": str(config_root / "items" / self.namespace),
-            "blocks": str(config_root / "blocks" / self.namespace),
-            "images": str(config_root / "images" / self.namespace),
-            "categories": str(config_root / "categories" / self.namespace),
-            "recipes": str(config_root / "recipes" / self.namespace),
-        }
+        return {section: str(config_root) for section in sections}
+
+    def _resolve_package_root(self, output_dir):
+        output_path = Path(output_dir).resolve()
+        parts = output_path.parts
+        config_index = None
+        for index, part in enumerate(parts):
+            if part.lower() == "configuration":
+                config_index = index
+
+        if config_index is None:
+            return output_path
+        return Path(*parts[:config_index])
 
     def save_config(self, output_dir):
         """
@@ -75,6 +81,17 @@ class IAConverter(BaseConverter):
         images_output_dir = output_dirs["images"]
         categories_output_dir = output_dirs["categories"]
         recipes_output_dir = output_dirs["recipes"]
+
+        package_root = self._resolve_package_root(output_dir)
+        self._write_yaml_with_footer(
+            {
+                "author": "MCC Tool",
+                "version": "1.0.0",
+                "description": "Converted from ItemsAdder by MCC Tool",
+                "namespace": self.namespace,
+            },
+            os.path.join(str(package_root), "pack.yml"),
+        )
 
         # 如果目录不存在则创建
         os.makedirs(items_output_dir, exist_ok=True)
