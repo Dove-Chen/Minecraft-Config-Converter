@@ -6,8 +6,6 @@ import zipfile
 import uuid
 import re
 import json
-from threading import Thread
-import time
 import yaml
 
 # 瀵煎叆鏍稿績閫昏緫
@@ -24,6 +22,8 @@ from src.converters.oraxen_to_ia import OraxenToIAConverter
 from src.converters.ce_to_ia import CEToIAConverter
 from src.converters.ce_to_nexo import CEToNexoConverter
 from src.converters.ce_to_oraxen import CEToOraxenConverter
+from src.converters.crucible_to_ia import CrucibleToIAConverter
+from src.migrators.crucible_to_ia import CrucibleToIAMigrator
 from src.analyzer import PackageAnalyzer
 from src.utils.yaml_loader import safe_load_yaml
 
@@ -46,6 +46,8 @@ SUPPORTED_PLUGINS = [
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
+UPLOAD_METADATA_FILENAME = ".upload.json"
+
 def _is_valid_session_id(value):
     if not isinstance(value, str) or not value:
         return False
@@ -64,21 +66,52 @@ def _safe_join_under(base_dir, *parts):
         raise ValueError("妫€娴嬪埌涓嶅畨鍏ㄧ殑璺緞")
     return target_path
 
+def _upload_basename(raw_filename):
+    return re.split(r"[\\/]", raw_filename or "")[-1]
+
+def _clean_download_filename(raw_filename, fallback):
+    cleaned = re.sub(r'[\\/*?:"<>|\x00-\x1f]', "", raw_filename or "")
+    cleaned = re.sub(r"\s+", "_", cleaned).strip(" ._")
+    return cleaned or fallback
+
 def _sanitize_upload_filename(raw_filename):
-    filename = secure_filename(raw_filename or "")
-    if not filename:
-        filename = "upload.zip"
-    return filename
+    base_name = _upload_basename(raw_filename)
+    stem, _ = os.path.splitext(base_name)
+    safe_stem = secure_filename(stem) or "upload"
+    return f"{safe_stem}.zip"
+
+def _write_upload_metadata(session_upload_dir, original_filename):
+    metadata_path = _safe_join_under(session_upload_dir, UPLOAD_METADATA_FILENAME)
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump({"original_filename": original_filename}, f, ensure_ascii=False)
+
+def _get_original_upload_filename(session_upload_dir):
+    metadata_path = _safe_join_under(session_upload_dir, UPLOAD_METADATA_FILENAME)
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        filename = _upload_basename(data.get("original_filename", ""))
+        if filename:
+            return filename
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return None
 
 def _save_uploaded_zip(file, session_upload_dir):
-    filename = _sanitize_upload_filename(file.filename)
-    if not filename.lower().endswith(".zip"):
-        raise ValueError("璇蜂笂浼?.zip 鏂囦欢")
+    raw_filename = file.filename or ""
+    base_name = _upload_basename(raw_filename)
+    if os.path.splitext(base_name)[1].lower() != ".zip":
+        raise ValueError("请上传 .zip 文件")
+    filename = _sanitize_upload_filename(raw_filename)
     file_path = _safe_join_under(session_upload_dir, filename)
     file.save(file_path)
-    return filename, file_path
+    _write_upload_metadata(session_upload_dir, base_name)
+    return base_name, file_path
 
 def _get_original_upload_stem(session_upload_dir):
+    original_filename = _get_original_upload_filename(session_upload_dir)
+    if original_filename:
+        return os.path.splitext(original_filename)[0]
     try:
         for file_name in os.listdir(session_upload_dir):
             if file_name.lower().endswith(".zip"):
@@ -92,9 +125,7 @@ def _build_output_filename(original_stem, target_format):
     target_format = target_format or "converted"
     marker = f"{target_format}_by_MCC"
     raw_name = f"{original_stem}_{marker}.zip"
-    cleaned = re.sub(r'[\\/*?:"<>|]', "", raw_name)
-    output_filename = secure_filename(cleaned)
-    return output_filename or "converted_by_MCC.zip"
+    return _clean_download_filename(raw_name, "converted_by_MCC.zip")
 
 def _next_available_output_path(output_filename):
     candidate_name = output_filename
@@ -195,6 +226,11 @@ def analyze():
                     available_targets.append("Oraxen")
 
             report["source_formats"] = detected_formats # 鏀瑰悕浠ュ弽鏄犲鏁?
+            if "MythicCrucible" in detected_formats:
+                for target in ("ItemsAdder", "CraftEngine", "Nexo", "Oraxen"):
+                    if target not in detected_formats and target not in available_targets:
+                        available_targets.append(target)
+
             report["available_targets"] = available_targets
             report["warnings"] = warnings
             report["filename"] = filename
@@ -278,6 +314,8 @@ def convert():
                 return _convert_nexo_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Oraxen":
                 return _convert_oraxen_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "MythicCrucible":
+                return _convert_crucible_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
             else:
                 return _convert_ia_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format)
 
@@ -288,6 +326,8 @@ def convert():
                 return _convert_oraxen_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Nexo":
                 return _convert_nexo_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "MythicCrucible":
+                return _convert_crucible_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format)
             return jsonify({'error': '鐩墠浠呮敮鎸?CraftEngine/Oraxen/Nexo -> ItemsAdder'}), 400
 
         if target_format == "Nexo":
@@ -295,6 +335,8 @@ def convert():
                 return _convert_ce_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Oraxen":
                 return _convert_oraxen_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "MythicCrucible":
+                return _convert_crucible_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "ItemsAdder" or not source_format:
                 return _convert_ia_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format)
             return jsonify({'error': '鐩墠浠呮敮鎸?CraftEngine/ItemsAdder -> Nexo'}), 400
@@ -304,6 +346,8 @@ def convert():
                 return _convert_ce_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "Nexo":
                 return _convert_nexo_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
+            if source_format == "MythicCrucible":
+                return _convert_crucible_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
             if source_format == "ItemsAdder" or not source_format:
                 return _convert_ia_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format)
             return jsonify({'error': '鐩墠浠呮敮鎸?CraftEngine/Nexo/ItemsAdder -> Oraxen'}), 400
@@ -486,6 +530,20 @@ def _collect_nexo_resourcepack_paths(base_pack_dir, temp_extract_root):
         return paths
 
     os.makedirs(temp_extract_root, exist_ok=True)
+    directory_entries = [
+        entry
+        for entry in os.listdir(external_dir)
+        if os.path.isdir(os.path.join(external_dir, entry))
+    ]
+    directory_entries.sort(key=lambda x: x.lower())
+    for entry in directory_entries:
+        entry_path = os.path.join(external_dir, entry)
+        pack_root = _find_resourcepack_root(entry_path)
+        if pack_root:
+            normalized = os.path.normpath(pack_root)
+            if normalized not in paths:
+                paths.append(normalized)
+
     zip_files = [f for f in os.listdir(external_dir) if f.lower().endswith(".zip")]
     zip_files.sort(key=lambda x: x.lower())
 
@@ -626,6 +684,229 @@ def _resolve_oraxen_namespace(oraxen_data, fallback_namespace, oraxen_pack_path)
     if pack_ns:
         return pack_ns
     return fallback_namespace
+
+def _is_crucible_item_data(value):
+    if not isinstance(value, dict):
+        return False
+    base_item = _get_case_insensitive_dict_value(value, "Id", "ID", "Material", "material")
+    markers = (
+        "Generation",
+        "Type",
+        "Furniture",
+        "CustomBlock",
+        "Recipes",
+        "EquipSlot",
+        "EquipConditions",
+        "Equippable",
+    )
+    has_marker = any(_get_case_insensitive_dict_value(value, key) is not None for key in markers)
+    return (base_item is not None and has_marker) or _get_case_insensitive_dict_value(value, "Furniture", "CustomBlock") is not None
+
+def _merge_crucible_data(target, data):
+    if not isinstance(data, dict):
+        return
+    items = _get_case_insensitive_dict_value(data, "items", "Items")
+    if isinstance(items, dict):
+        for item_id, item_data in items.items():
+            if _is_crucible_item_data(item_data):
+                target.setdefault("items", {})[item_id] = item_data
+    else:
+        for item_id, item_data in data.items():
+            if _is_crucible_item_data(item_data):
+                target.setdefault("items", {})[item_id] = item_data
+
+    font_images = _get_case_insensitive_dict_value(data, "font_images", "font-images", "FontImages")
+    if isinstance(font_images, dict):
+        target.setdefault("font_images", {}).update(font_images)
+
+def _load_crucible_package(extract_dir):
+    merged_data = {"items": {}, "font_images": {}}
+    item_configs = []
+    font_image_configs = []
+
+    for root, _, files in os.walk(extract_dir):
+        for file_name in files:
+            if not file_name.endswith((".yml", ".yaml")):
+                continue
+            full_path = os.path.join(root, file_name)
+            data = safe_load_yaml(full_path)
+            if not isinstance(data, dict):
+                continue
+            lower_name = file_name.lower()
+            if lower_name in {"font-images.yml", "font-images.yaml", "font_images.yml", "font_images.yaml"}:
+                merged_data["font_images"].update(data)
+                font_image_configs.append(full_path)
+                continue
+
+            before_count = len(merged_data["items"])
+            _merge_crucible_data(merged_data, data)
+            if len(merged_data["items"]) > before_count:
+                item_configs.append(full_path)
+
+    return merged_data, _collect_crucible_resource_roots(extract_dir), item_configs, font_image_configs
+
+def _collect_crucible_resource_roots(extract_dir):
+    roots = []
+
+    def add_root(path):
+        if not isinstance(path, str) or not os.path.isdir(path):
+            return
+        normalized = os.path.normpath(path)
+        if normalized not in roots:
+            roots.append(normalized)
+
+    for root, dirs, _ in os.walk(extract_dir):
+        dir_lookup = {d.lower(): d for d in dirs}
+        if "assets" in dir_lookup:
+            add_root(root)
+        if "models" in dir_lookup or "textures" in dir_lookup or "sounds" in dir_lookup:
+            add_root(root)
+        if "generation" in dir_lookup:
+            generation_root = os.path.join(root, dir_lookup["generation"])
+            merge_root = os.path.join(generation_root, "merge")
+            if os.path.isdir(os.path.join(merge_root, "assets")):
+                add_root(merge_root)
+        if "packs" in dir_lookup:
+            packs_root = os.path.join(root, dir_lookup["packs"])
+            for pack_name in os.listdir(packs_root):
+                pack_root = os.path.join(packs_root, pack_name)
+                if os.path.isdir(os.path.join(pack_root, "Assets")):
+                    add_root(pack_root)
+
+    return roots
+
+def _infer_crucible_namespace(crucible_data, resource_roots):
+    generation = _get_case_insensitive_dict_value(crucible_data, "Generation", "generation", default={})
+    if isinstance(generation, dict):
+        namespace = _get_case_insensitive_dict_value(generation, "Namespace", "namespace")
+        if _is_valid_namespace(namespace):
+            return namespace
+
+    scores = {}
+    for root in resource_roots or []:
+        assets_root = os.path.join(root, "assets")
+        if not os.path.isdir(assets_root):
+            continue
+        for namespace in os.listdir(assets_root):
+            if namespace == "minecraft" or not _is_valid_namespace(namespace):
+                continue
+            namespace_root = os.path.join(assets_root, namespace)
+            if os.path.isdir(namespace_root):
+                scores[namespace] = scores.get(namespace, 0) + 1
+    if scores:
+        return max(scores.items(), key=lambda x: x[1])[0]
+    return "mythic"
+
+def _resolve_crucible_output_namespace(crucible_data, resource_roots):
+    user_namespace = request.form.get('namespace')
+    if user_namespace:
+        if not _is_valid_namespace(user_namespace):
+            return None, jsonify({'error': 'Invalid namespace'}), 400
+        return user_namespace, None, None
+    return _infer_crucible_namespace(crucible_data, resource_roots), None, None
+
+def _build_crucible_intermediate_ia_pack(resource_roots, session_upload_dir, namespace, marker):
+    if not resource_roots:
+        return None
+    base_dir = os.path.abspath(session_upload_dir)
+    ia_pack_dir = os.path.abspath(os.path.join(base_dir, marker))
+    try:
+        if os.path.commonpath([base_dir, ia_pack_dir]) != base_dir:
+            raise ValueError("Invalid intermediate path")
+    except ValueError:
+        raise ValueError("Invalid intermediate path")
+    if os.path.isdir(ia_pack_dir):
+        shutil.rmtree(ia_pack_dir, ignore_errors=True)
+    os.makedirs(ia_pack_dir, exist_ok=True)
+    CrucibleToIAMigrator(resource_roots, ia_pack_dir, namespace).migrate()
+    return ia_pack_dir
+
+def _load_crucible_ia_data(extract_dir, session_upload_dir, marker):
+    crucible_data, resource_roots, item_configs, font_image_configs = _load_crucible_package(extract_dir)
+    if not item_configs and not font_image_configs:
+        return None, None, None, jsonify({'error': 'No MythicCrucible item config files found'}), 400
+
+    namespace, error_response, status_code = _resolve_crucible_output_namespace(crucible_data, resource_roots)
+    if error_response:
+        return None, None, None, error_response, status_code
+
+    ia_data = CrucibleToIAConverter().convert(crucible_data, namespace=namespace)
+    ia_pack = _build_crucible_intermediate_ia_pack(resource_roots, session_upload_dir, namespace, marker)
+    return ia_data, ia_pack, namespace, None, None
+
+def _convert_crucible_to_ia(extract_dir, session_output_dir, session_upload_dir, target_format):
+    crucible_data, resource_roots, item_configs, font_image_configs = _load_crucible_package(extract_dir)
+    if not item_configs and not font_image_configs:
+        return jsonify({'error': 'No MythicCrucible item config files found'}), 400
+
+    namespace, error_response, status_code = _resolve_crucible_output_namespace(crucible_data, resource_roots)
+    if error_response:
+        return error_response, status_code
+
+    converter = CrucibleToIAConverter()
+    ia_output_base = os.path.join(session_output_dir, "ItemsAdder", "contents", namespace)
+    ia_config_dir = os.path.join(ia_output_base, "configs")
+    ia_res_dir = os.path.join(ia_output_base, "resourcepack")
+    if resource_roots:
+        converter.set_resource_paths(resource_roots, ia_res_dir)
+    converter.convert(crucible_data, namespace=namespace)
+    converter.save_config(ia_config_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="ItemsAdder")
+
+def _convert_crucible_to_ce(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ia_data, ia_pack, namespace, error_response, status_code = _load_crucible_ia_data(
+        extract_dir, session_upload_dir, "_crucible_ia_ce"
+    )
+    if error_response:
+        return error_response, status_code
+
+    converter = IAConverter()
+    converter.set_fix_illegal_model_rotations(_form_flag_enabled("fix_illegal_model_rotations"))
+    ce_output_base = os.path.join(session_output_dir, "CraftEngine", "resources", namespace)
+    ce_config_dir = os.path.join(ce_output_base, "configuration")
+    ce_res_dir = os.path.join(ce_output_base, "resourcepack")
+    if ia_pack:
+        converter.set_resource_paths(ia_pack, ce_res_dir)
+    converter.convert(ia_data, namespace=namespace)
+    converter.save_config(ce_config_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format)
+
+def _convert_crucible_to_nexo(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ia_data, ia_pack, namespace, error_response, status_code = _load_crucible_ia_data(
+        extract_dir, session_upload_dir, "_crucible_ia_nexo"
+    )
+    if error_response:
+        return error_response, status_code
+
+    converter = IAToNexoConverter()
+    nexo_root = os.path.join(session_output_dir, "Nexo")
+    nexo_items_dir = os.path.join(nexo_root, "items")
+    nexo_pack_dir = os.path.join(nexo_root, "pack")
+    if ia_pack:
+        converter.set_resource_paths(ia_pack, nexo_pack_dir)
+    converter.convert(ia_data, namespace=namespace)
+    converter.save_config(nexo_items_dir)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Nexo")
+
+def _convert_crucible_to_oraxen(extract_dir, session_output_dir, session_upload_dir, target_format):
+    ia_data, ia_pack, namespace, error_response, status_code = _load_crucible_ia_data(
+        extract_dir, session_upload_dir, "_crucible_ia_oraxen"
+    )
+    if error_response:
+        return error_response, status_code
+
+    converter = IAToOraxenConverter()
+    oraxen_root = os.path.join(session_output_dir, "Oraxen")
+    oraxen_pack_dir = os.path.join(oraxen_root, "pack")
+    if ia_pack:
+        converter.set_resource_paths(ia_pack, oraxen_pack_dir)
+    converter.convert(ia_data, namespace=namespace)
+    converter.save_config(oraxen_root)
+
+    return _package_and_respond(session_output_dir, session_upload_dir, target_format, root_dir_name="Oraxen")
 
 def _find_oraxen_scan_root(extract_dir):
     scan_root = extract_dir
@@ -2424,8 +2705,8 @@ def _package_and_respond(session_output_dir, session_upload_dir, target_format, 
 
 @app.route('/api/download/<filename>')
 def download_file(filename):
-    safe_name = secure_filename(filename or "")
-    if not safe_name or safe_name != filename:
+    safe_name = _clean_download_filename(filename, "")
+    if not safe_name or safe_name != filename or os.path.splitext(safe_name)[1].lower() != ".zip":
         return jsonify({'error': '鏃犳晥鐨勬枃浠跺悕'}), 400
     file_path = _safe_join_under(app.config['OUTPUT_FOLDER'], safe_name)
     if not os.path.isfile(file_path):
@@ -2433,17 +2714,12 @@ def download_file(filename):
     return send_file(file_path, as_attachment=True)
 
 import webbrowser
-from threading import Timer, Lock
-
-# ... existing imports ...
-
-# ... existing code ...
+from threading import Timer
 
 @app.route('/api/shutdown', methods=['POST'])
 def shutdown():
     """Shut down the server."""
     def kill():
-        # 寮哄埗閫€鍑鸿繘绋?(os._exit 鑳藉缁堟鏁翠釜杩涚▼锛岃€?sys.exit 鍦ㄧ嚎绋嬩腑鍙粓姝㈢嚎绋?
         os._exit(0)
         
     # 寤惰繜 1 绉掓墽琛岋紝浠ヤ究杩斿洖鍝嶅簲缁欏墠绔?
@@ -2453,40 +2729,12 @@ def shutdown():
 def open_browser():
     webbrowser.open_new('http://127.0.0.1:5000/')
 
-# 蹇冭烦鍏ㄥ眬鐘舵€?
-last_heartbeat = time.time()
-HEARTBEAT_TIMEOUT = 15  # 绉掞紝澧炲姞瓒呮椂鏃堕棿浠ュ厑璁告洿闀跨殑鍚姩鍔犺浇
 
-@app.route('/api/heartbeat', methods=['POST'])
-def heartbeat():
-    global last_heartbeat
-    last_heartbeat = time.time()
-    return jsonify({'status': 'alive'})
-
-def check_heartbeat():
-    """Monitor heartbeat and stop the server after timeout."""
-    global last_heartbeat
-    while True:
-        time.sleep(1)
-        # 濡傛灉 TIMEOUT 绉掑唴娌℃湁蹇冭烦锛屽垯鍏抽棴
-        if time.time() - last_heartbeat > HEARTBEAT_TIMEOUT:
-            print("蹇冭烦瓒呮椂銆傛鍦ㄥ叧闂湇鍔″櫒...")
-            # 浣跨敤 os._exit 浠庣嚎绋嬬珛鍗崇粓姝?
-            os._exit(0)
 
 if __name__ == '__main__':
     # 浠呭湪闈炶皟璇曟ā寮忎笅鎵撳紑娴忚鍣?(閲嶈浇浼氬鑷村弻閲嶆墦寮€)
     # 浣嗗浜庢墦鍖呯殑搴旂敤锛岃皟璇曢€氬父涓?False 鎴栦笉鐩稿叧銆?
     if not os.environ.get("WERKZEUG_RUN_MAIN"):
         Timer(1.5, open_browser).start()
-        
-        # 閲嶇疆蹇冭烦璁℃椂鍣ㄤ互閬垮厤鍦ㄥ惎鍔ㄦ湡闂磋秴鏃?
-        last_heartbeat = time.time()
-        
-        # 鍚姩蹇冭烦鐩戞帶绾跨▼
-        import threading
-        monitor_thread = threading.Thread(target=check_heartbeat, daemon=True)
-        monitor_thread.start()
-        
     app.run(debug=False, port=5000)
 

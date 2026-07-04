@@ -33,7 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function handleFile(file) {
-        if (!file.name.endsWith('.zip')) {
+        if (!file.name.toLowerCase().endsWith('.zip')) {
             showError("请上传 .zip 格式的文件。");
             return;
         }
@@ -426,11 +426,4 @@ document.addEventListener('DOMContentLoaded', () => {
         errorMessage.textContent = msg;
     }
 
-    // 心跳包保证服务器存活
-    setInterval(() => {
-        fetch('/api/heartbeat', { method: 'POST' })
-            .catch(() => {
-                console.log("Heartbeat failed.");
-            });
-    }, 2000); // 每两秒发送一次心跳包
 });

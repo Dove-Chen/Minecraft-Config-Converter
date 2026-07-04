@@ -10,11 +10,17 @@ class NexoToIAMigrator(BaseMigrator):
         self.namespace = namespace
         # 支持单路径与多路径输入，便于处理 external_packs 解包目录
         if isinstance(nexo_resourcepack_path, (list, tuple)):
-            self.input_paths = [os.path.normpath(p) for p in nexo_resourcepack_path if isinstance(p, str) and p.strip()]
+            raw_paths = [p for p in nexo_resourcepack_path if isinstance(p, str) and p.strip()]
         elif isinstance(nexo_resourcepack_path, str) and nexo_resourcepack_path.strip():
-            self.input_paths = [os.path.normpath(nexo_resourcepack_path)]
+            raw_paths = [nexo_resourcepack_path]
         else:
-            self.input_paths = []
+            raw_paths = []
+
+        self.input_paths = []
+        for path in raw_paths:
+            self._add_input_path(path)
+            for external_root in self._collect_external_pack_roots(path):
+                self._add_input_path(external_root)
 
     def migrate(self):
         # 按输入顺序迁移：后面的目录会覆盖前面的同名文件
@@ -26,6 +32,41 @@ class NexoToIAMigrator(BaseMigrator):
                 self._copy_tree(src_dir, os.path.join(self.output_path, "assets", self.namespace, "models"))
             for src_dir in textures_sources:
                 self._copy_tree(src_dir, os.path.join(self.output_path, "assets", self.namespace, "textures"))
+
+    def _add_input_path(self, path):
+        normalized = os.path.normpath(path)
+        if normalized not in self.input_paths:
+            self.input_paths.append(normalized)
+
+    def _collect_external_pack_roots(self, input_root):
+        external_dir = os.path.join(input_root, "external_packs")
+        if not os.path.isdir(external_dir):
+            return []
+
+        roots = []
+        for entry in sorted(os.listdir(external_dir), key=lambda x: x.lower()):
+            entry_path = os.path.join(external_dir, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            pack_root = self._find_resourcepack_root(entry_path)
+            if pack_root:
+                roots.append(pack_root)
+        return roots
+
+    def _find_resourcepack_root(self, search_dir):
+        if not os.path.isdir(search_dir):
+            return None
+        if os.path.isdir(os.path.join(search_dir, "assets")):
+            return search_dir
+        if os.path.isdir(os.path.join(search_dir, "models")) or os.path.isdir(os.path.join(search_dir, "textures")):
+            return search_dir
+
+        for root, dirs, _ in os.walk(search_dir):
+            if "assets" in dirs:
+                return root
+            if "models" in dirs or "textures" in dirs:
+                return root
+        return None
 
     def _collect_resource_dirs(self, resource_type, input_root):
         dirs = []

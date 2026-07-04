@@ -46,6 +46,10 @@ class PackageAnalyzer:
                 if "Oraxen" not in self.report["formats"]:
                     self.report["formats"].append("Oraxen")
 
+            if current_dir_name in {"mythiccrucible", "mythicmobs"} or "mythiccrucible" in dirs or "mythicmobs" in dirs:
+                if "MythicCrucible" not in self.report["formats"]:
+                    self.report["formats"].append("MythicCrucible")
+
             # 检查资源文件
             if "textures" in dirs or "textures" in root:
                 self.report["content_types"].add("贴图")
@@ -83,26 +87,37 @@ class PackageAnalyzer:
                 is_ce = False
                 is_nexo = False
                 is_oraxen = False
+                is_crucible = False
             elif plugin_context == "CraftEngine":
                 is_ia = False
                 is_ce = self._is_ce_config(data)
                 is_nexo = False
                 is_oraxen = False
+                is_crucible = False
             elif plugin_context == "Nexo":
                 is_ia = False
                 is_ce = False
                 is_nexo = self._is_nexo_config(data)
                 is_oraxen = False
+                is_crucible = False
             elif plugin_context == "Oraxen":
                 is_ia = False
                 is_ce = False
                 is_nexo = False
                 is_oraxen = self._is_oraxen_config(data)
+                is_crucible = False
+            elif plugin_context == "MythicCrucible":
+                is_ia = False
+                is_ce = False
+                is_nexo = False
+                is_oraxen = False
+                is_crucible = self._is_crucible_config(data)
             else:
                 is_ia = self._is_ia_config(data)
                 is_ce = self._is_ce_config(data)
                 is_nexo = self._is_nexo_config(data)
                 is_oraxen = self._is_oraxen_config(data)
+                is_crucible = self._is_crucible_config(data)
 
             if is_ia:
                 if "ItemsAdder" not in self.report["formats"]:
@@ -151,6 +166,27 @@ class PackageAnalyzer:
                         self.report["completeness"]["items_config"] = True
                         self.report["content_types"].add("装备")
                         self.report["details"]["item_count"] += len(data)
+
+            if is_crucible:
+                    if "MythicCrucible" not in self.report["formats"]:
+                        self.report["formats"].append("MythicCrucible")
+                    items_section = self._get_section(data, "items")
+                    if not items_section and self._looks_like_crucible_items_file(data):
+                        items_section = data
+                    if isinstance(items_section, dict):
+                        item_values = [
+                            value for value in items_section.values()
+                            if isinstance(value, dict) and self._looks_like_crucible_item(value)
+                        ]
+                        self.report["completeness"]["items_config"] = True
+                        self.report["content_types"].add("瑁呭")
+                        self.report["details"]["item_count"] += len(item_values)
+                        for item in item_values:
+                            item_type = str(self._get_dict_value(item, "Type", "type", default="")).upper()
+                            if item_type == "FURNITURE" or self._get_dict_value(item, "Furniture", "furniture"):
+                                self.report["content_types"].add("瑁呴グ")
+                            if item_type == "BLOCK" or self._get_dict_value(item, "CustomBlock", "custom_block"):
+                                self.report["content_types"].add("方块")
                 
         except Exception:
             pass # 忽略无法解析的文件
@@ -165,7 +201,9 @@ class PackageAnalyzer:
             "itemsadder": "ItemsAdder",
             "craftengine": "CraftEngine",
             "nexo": "Nexo",
-            "oraxen": "Oraxen"
+            "oraxen": "Oraxen",
+            "mythiccrucible": "MythicCrucible",
+            "mythicmobs": "MythicCrucible"
         }
         for part in parts[:-1]:
             if part in plugin_map:
@@ -316,6 +354,43 @@ class PackageAnalyzer:
             if score >= 3:
                 return True
         return False
+
+    def _is_crucible_config(self, data):
+        if not isinstance(data, dict):
+            return False
+        items_section = self._get_section(data, "items")
+        if isinstance(items_section, dict):
+            return self._looks_like_crucible_items_file(items_section)
+        return self._looks_like_crucible_items_file(data)
+
+    def _looks_like_crucible_items_file(self, data):
+        if not isinstance(data, dict):
+            return False
+        for value in data.values():
+            if isinstance(value, dict) and self._looks_like_crucible_item(value):
+                return True
+        return False
+
+    def _looks_like_crucible_item(self, value):
+        if not isinstance(value, dict):
+            return False
+        has_base_item = self._get_dict_value(value, "Id", "ID", "Material", "material") is not None
+        has_crucible_marker = any(
+            self._get_dict_value(value, key, default=None) is not None
+            for key in (
+                "Generation",
+                "Type",
+                "Furniture",
+                "CustomBlock",
+                "Recipes",
+                "EquipSlot",
+                "EquipConditions",
+                "Equippable",
+            )
+        )
+        if has_base_item and has_crucible_marker:
+            return True
+        return self._get_dict_value(value, "Furniture", "CustomBlock", default=None) is not None
 
     def _get_section(self, data, section_name):
         if not isinstance(data, dict):

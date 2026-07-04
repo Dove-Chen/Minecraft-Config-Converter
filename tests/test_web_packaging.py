@@ -4,9 +4,12 @@ import zipfile
 import json
 from pathlib import Path
 
+from src.analyzer import PackageAnalyzer
+from src.converters.crucible_to_ia import CrucibleToIAConverter
 from web.app import (
     app,
     _build_output_filename,
+    _convert_crucible_to_nexo,
     _convert_ia_to_ce,
     _convert_ia_to_nexo,
     _convert_ia_to_oraxen,
@@ -59,6 +62,66 @@ recipes:
         )
         (texture_dir / f"{item_id}.png").write_bytes(b"png")
 
+    def _write_crucible_content(self, root):
+        source_root = Path(root) / "MythicMobs"
+        items_dir = source_root / "Items"
+        assets_root = source_root / "Packs" / "ExamplePack" / "Assets"
+        items_dir.mkdir(parents=True)
+        (assets_root / "models" / "item").mkdir(parents=True)
+        (assets_root / "textures" / "item").mkdir(parents=True)
+
+        (items_dir / "items.yml").write_text(
+            """
+EmeraldSword:
+  Id: DIAMOND_SWORD
+  Display: "<green>Emerald Sword"
+  Model: 7
+  Generation: item/emerald_sword
+  Type: ITEM
+  Group: Weapons
+  Recipes:
+    SHAPED:
+      Type: SHAPED
+      Amount: 1
+      Ingredients:
+      - EMERALD | AIR
+      - AIR | STICK
+OakChair:
+  Id: PAPER
+  Display: Oak Chair
+  Type: FURNITURE
+  Model: 8
+  Generation:
+    Model: item/oak_chair
+  Furniture:
+    Type: DISPLAY
+    Placement: ANY
+    Hitbox:
+      Height: 1
+      Width: 1
+    Seats:
+    - 0,0.4,0,0,0
+    Lights:
+    - 0,1,0 12
+RubyOre:
+  Id: STONE
+  Display: Ruby Ore
+  Type: BLOCK
+  Model: 9
+  CustomBlock:
+    Type: NOTE_BLOCK
+    Id: 30
+    Texture: block/ruby_ore
+    Hardness: 4
+""".lstrip(),
+            encoding="utf-8",
+        )
+        (assets_root / "models" / "item" / "emerald_sword.json").write_text(
+            '{"parent":"minecraft:item/handheld","textures":{"layer0":"item/emerald_sword"}}',
+            encoding="utf-8",
+        )
+        (assets_root / "textures" / "item" / "emerald_sword.png").write_bytes(b"png")
+
     def _run_itemsadder_conversion(self, converter, target_format, form_data=None):
         original_output_folder = app.config["OUTPUT_FOLDER"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,6 +170,11 @@ recipes:
             "Exile_Studio_-_Ore_Pack_vol.1_v1.1_CraftEngine_by_MCC.zip",
         )
         self.assertNotIn("ca0cafe8", output_name)
+
+    def test_output_filename_preserves_non_ascii_archive_name(self):
+        output_name = _build_output_filename("贴图", "CraftEngine")
+
+        self.assertEqual(output_name, "贴图_CraftEngine_by_MCC.zip")
 
     def test_duplicate_output_filename_gets_numeric_suffix(self):
         original_output_folder = app.config["OUTPUT_FOLDER"]
@@ -168,6 +236,56 @@ recipes:
             finally:
                 app.config["UPLOAD_FOLDER"] = original_upload_folder
 
+    def test_analyze_accepts_non_ascii_zip_filename(self):
+        original_upload_folder = app.config["UPLOAD_FOLDER"]
+        original_output_folder = app.config["OUTPUT_FOLDER"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            upload_dir = tmp_path / "uploads"
+            output_dir = tmp_path / "outputs"
+            upload_dir.mkdir()
+            output_dir.mkdir()
+            self._write_itemsadder_content(source_dir, "alpha")
+
+            archive_path = tmp_path / "bundle.zip"
+            with zipfile.ZipFile(archive_path, "w") as zip_file:
+                for file_path in source_dir.rglob("*"):
+                    if file_path.is_file():
+                        zip_file.write(file_path, file_path.relative_to(source_dir))
+
+            try:
+                app.config["UPLOAD_FOLDER"] = str(upload_dir)
+                app.config["OUTPUT_FOLDER"] = str(output_dir)
+                with archive_path.open("rb") as f:
+                    response = app.test_client().post(
+                        "/api/analyze",
+                        data={"file": (f, "贴图.zip")},
+                        content_type="multipart/form-data",
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                response_data = response.get_json()
+                report = response_data["report"]
+                self.assertIn("ItemsAdder", report["formats"])
+                self.assertEqual(report["filename"], "贴图.zip")
+
+                convert_response = app.test_client().post(
+                    "/api/convert",
+                    data={
+                        "session_id": response_data["session_id"],
+                        "target_format": "CraftEngine",
+                    },
+                )
+
+                self.assertEqual(convert_response.status_code, 200)
+                download_name = convert_response.get_json()["download_url"].rsplit("/", 1)[-1]
+                self.assertEqual(download_name, "贴图_CraftEngine_by_MCC.zip")
+                self.assertTrue((output_dir / download_name).is_file())
+            finally:
+                app.config["UPLOAD_FOLDER"] = original_upload_folder
+                app.config["OUTPUT_FOLDER"] = original_output_folder
+
     def test_itemsadder_batch_to_craftengine_outputs_each_namespace(self):
         names, _ = self._run_itemsadder_conversion(_convert_ia_to_ce, "CraftEngine")
 
@@ -224,6 +342,113 @@ recipes:
         shaped = contents["Oraxen/recipes/shaped.yml"]
         self.assertIn("alpha_gem", shaped)
         self.assertIn("beta_gem", shaped)
+
+    def test_crucible_to_itemsadder_maps_items_furniture_blocks_and_recipes(self):
+        converted = CrucibleToIAConverter().convert(
+            {
+                "EmeraldSword": {
+                    "Id": "DIAMOND_SWORD",
+                    "Display": "<green>Emerald Sword",
+                    "Lore": ["Sharp and shiny"],
+                    "Model": 7,
+                    "Generation": "item/emerald_sword",
+                    "Group": "Weapons",
+                    "Recipes": {
+                        "SHAPED": {
+                            "Type": "SHAPED",
+                            "Amount": 1,
+                            "Ingredients": ["EMERALD | AIR", "AIR | STICK"],
+                        }
+                    },
+                },
+                "OakChair": {
+                    "Id": "PAPER",
+                    "Display": "Oak Chair",
+                    "Type": "FURNITURE",
+                    "Model": 8,
+                    "Generation": {"Model": "item/oak_chair"},
+                    "Furniture": {
+                        "Type": "DISPLAY",
+                        "Placement": "ANY",
+                        "Hitbox": {"Height": 1, "Width": 1},
+                        "Seats": ["0,0.4,0,0,0"],
+                        "Lights": ["0,1,0 12"],
+                    },
+                },
+                "RubyOre": {
+                    "Id": "STONE",
+                    "Display": "Ruby Ore",
+                    "Type": "BLOCK",
+                    "Model": 9,
+                    "CustomBlock": {
+                        "Type": "NOTE_BLOCK",
+                        "Id": 30,
+                        "Texture": "block/ruby_ore",
+                        "Hardness": 4,
+                    },
+                },
+            },
+            namespace="testpack",
+        )
+
+        sword = converted["items"]["emerald_sword"]
+        self.assertEqual(sword["display_name"], "<green>Emerald Sword")
+        self.assertEqual(sword["resource"]["model_path"], "item/emerald_sword")
+        self.assertEqual(sword["resource"]["model_id"], 7)
+
+        chair = converted["items"]["oak_chair"]
+        self.assertEqual(chair["behaviours"]["furniture"]["placeable_on"], {
+            "floor": True,
+            "walls": True,
+            "ceiling": True,
+        })
+        self.assertEqual(chair["behaviours"]["furniture"]["light_level"], 12)
+        self.assertAlmostEqual(chair["behaviours"]["furniture_sit"]["sit_height"], 1.25)
+
+        block = converted["items"]["ruby_ore"]
+        self.assertEqual(block["specific_properties"]["block"]["placed_model"]["type"], "REAL_NOTE")
+        self.assertEqual(block["specific_properties"]["block"]["hardness"], 4)
+        self.assertEqual(
+            converted["recipes"]["crafting_table"]["emerald_sword_shaped"]["result"],
+            {"item": "testpack:emerald_sword", "amount": 1},
+        )
+        self.assertEqual(converted["categories"]["weapons"]["items"], ["testpack:emerald_sword"])
+
+    def test_crucible_package_converts_to_nexo_with_resources(self):
+        original_output_folder = app.config["OUTPUT_FOLDER"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            extract_dir = tmp_path / "extracted"
+            upload_dir = tmp_path / "upload"
+            session_output_dir = tmp_path / "session_output"
+            download_dir = tmp_path / "downloads"
+            upload_dir.mkdir()
+            session_output_dir.mkdir()
+            download_dir.mkdir()
+            (upload_dir / "bundle.zip").touch()
+            self._write_crucible_content(extract_dir)
+
+            report = PackageAnalyzer(str(extract_dir)).analyze()
+            self.assertIn("MythicCrucible", report["formats"])
+
+            try:
+                app.config["OUTPUT_FOLDER"] = str(download_dir)
+                with app.test_request_context("/api/convert", method="POST", data={"namespace": "testpack"}):
+                    response = _convert_crucible_to_nexo(
+                        str(extract_dir),
+                        str(session_output_dir),
+                        str(upload_dir),
+                        "Nexo",
+                    )
+                data = response.get_json()
+                output_name = data["download_url"].rsplit("/", 1)[-1]
+                with zipfile.ZipFile(download_dir / output_name) as zip_file:
+                    names = set(zip_file.namelist())
+                self.assertIn("Nexo/items/testpack.yml", names)
+                self.assertIn("Nexo/pack/assets/testpack/models/item/emerald_sword.json", names)
+                self.assertIn("Nexo/pack/assets/testpack/textures/item/emerald_sword.png", names)
+            finally:
+                app.config["OUTPUT_FOLDER"] = original_output_folder
 
 
 if __name__ == "__main__":

@@ -317,6 +317,8 @@ class NexoToIAConverter(BaseConverter):
         resource = {"material": material}
 
         model_id = self._get_dict_value(data, "model", "custom_model_data", "custom-model-data")
+        if model_id is None:
+            model_id = self._get_dict_value(pack, "custom_model_data", "custom-model-data")
         if isinstance(model_id, (int, float)):
             resource["model_id"] = int(model_id)
 
