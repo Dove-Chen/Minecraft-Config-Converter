@@ -15,6 +15,7 @@ class IAMigrator(BaseMigrator):
         block_texture_keys=None,
         block_model_keys=None,
         font_image_texture_keys=None,
+        equipment_texture_refs=None,
         fix_illegal_model_rotations=False
     ):
         super().__init__(ia_resourcepack_path, ce_resourcepack_path)
@@ -24,6 +25,7 @@ class IAMigrator(BaseMigrator):
         self.block_texture_keys = set(block_texture_keys or [])
         self.block_model_keys = set(block_model_keys or [])
         self.font_image_texture_keys = set(font_image_texture_keys or [])
+        self.equipment_texture_refs = list(equipment_texture_refs or [])
         self.fix_illegal_model_rotations = bool(fix_illegal_model_rotations)
 
     def migrate(self):
@@ -32,6 +34,7 @@ class IAMigrator(BaseMigrator):
         
         # 1. 迁移纹理
         self._migrate_textures()
+        self._migrate_equipment_textures()
         
         # 2. 迁移模型
         self._migrate_models()
@@ -261,6 +264,53 @@ class IAMigrator(BaseMigrator):
         if path.startswith("item/"):
             return path
         return f"item/{path}"
+
+    def _split_resource_location(self, value):
+        if not isinstance(value, str) or not value.strip():
+            return None, None
+        ref = value.strip().replace("\\", "/")
+        if ":" in ref:
+            namespace, path = ref.split(":", 1)
+        else:
+            namespace, path = self.namespace, ref
+        return namespace, path.strip("/")
+
+    def _copy_equipment_texture_ref(self, source_ref, target_ref):
+        source_namespace, source_path = self._split_resource_location(source_ref)
+        target_namespace, target_path = self._split_resource_location(target_ref)
+        if not source_namespace or not source_path or not target_namespace or not target_path:
+            return False
+
+        src_file = os.path.join(
+            self.input_path,
+            "assets",
+            source_namespace,
+            "textures",
+            f"{source_path}.png",
+        )
+        if not os.path.exists(src_file):
+            return False
+
+        dest_file = os.path.join(
+            self.output_path,
+            "assets",
+            target_namespace,
+            "textures",
+            f"{target_path}.png",
+        )
+        os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+        shutil.copy2(src_file, dest_file)
+
+        src_meta = f"{src_file}.mcmeta"
+        if os.path.exists(src_meta):
+            shutil.copy2(src_meta, f"{dest_file}.mcmeta")
+        return True
+
+    def _migrate_equipment_textures(self):
+        for ref_pair in self.equipment_texture_refs:
+            if not isinstance(ref_pair, dict):
+                continue
+            self._copy_equipment_texture_ref(ref_pair.get("source"), ref_pair.get("target"))
 
     def _migrate_textures(self):
         """

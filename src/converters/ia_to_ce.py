@@ -25,6 +25,7 @@ class IAConverter(BaseConverter):
         self.block_texture_keys = set()
         self.block_model_keys = set()
         self.font_image_texture_keys = set()
+        self.equipment_texture_refs = []
         self.ia_block_loots_by_type = {}
         self.block_visual_state_counters = {}
         self.ia_font_image_ids = set()
@@ -160,6 +161,7 @@ class IAConverter(BaseConverter):
                 self.block_texture_keys,
                 self.block_model_keys,
                 self.font_image_texture_keys,
+                self.equipment_texture_refs,
                 fix_illegal_model_rotations=self.fix_illegal_model_rotations
             )
             migrator.migrate()
@@ -182,6 +184,7 @@ class IAConverter(BaseConverter):
         self.ia_block_loots_by_type = self._build_block_loot_index(ia_data.get("loots", {}))
         self.block_visual_state_counters = {}
         self.ia_font_image_ids = set()
+        self.equipment_texture_refs = []
 
         if "font_images" in ia_data:
             self._convert_font_images(ia_data["font_images"])
@@ -319,6 +322,150 @@ class IAConverter(BaseConverter):
 
         resource.setdefault("material", "STONE")
         return resource
+
+    def _extract_equippable_component(self, item_data):
+        components = item_data.get("components")
+        if isinstance(components, dict):
+            equippable = components.get("minecraft:equippable") or components.get("equippable")
+            if isinstance(equippable, dict):
+                return {
+                    "asset_id": equippable.get("asset_id") or equippable.get("asset-id"),
+                    "slot": equippable.get("slot"),
+                }
+
+        nbt = item_data.get("nbt")
+        if not isinstance(nbt, str) or "equippable" not in nbt:
+            return {}
+
+        result = {}
+        asset_match = re.search(r"['\"]?asset[_-]id['\"]?\s*:\s*['\"]([^'\"]+)['\"]", nbt)
+        slot_match = re.search(r"['\"]?slot['\"]?\s*:\s*['\"]([^'\"]+)['\"]", nbt)
+        if asset_match:
+            result["asset_id"] = asset_match.group(1)
+        if slot_match:
+            result["slot"] = slot_match.group(1)
+        return result
+
+    def _normalize_slot_name(self, raw_slot):
+        if raw_slot is None:
+            return None
+        slot_map = {
+            "head": "head",
+            "helmet": "head",
+            "chest": "chest",
+            "chestplate": "chest",
+            "body": "body",
+            "legs": "legs",
+            "leggings": "legs",
+            "feet": "feet",
+            "boots": "feet",
+            "saddle": "saddle",
+        }
+        key = str(raw_slot).strip().lower()
+        return slot_map.get(key, key) if key else None
+
+    def _split_resource_location(self, value, default_namespace=None):
+        if not isinstance(value, str) or not value.strip():
+            return None, None
+        ref = value.strip().replace("\\", "/")
+        if ":" in ref:
+            namespace, path = ref.split(":", 1)
+        else:
+            namespace, path = default_namespace or self.namespace, ref
+        return namespace, path.strip("/")
+
+    def _find_equipment_asset_file(self, asset_id):
+        namespace, path = self._split_resource_location(asset_id)
+        if not namespace or not path or not self.ia_resourcepack_root:
+            return None
+        candidates = [
+            os.path.join(self.ia_resourcepack_root, "assets", namespace, "equipment", f"{path}.json"),
+            os.path.join(self.ia_resourcepack_root, namespace, "equipment", f"{path}.json"),
+            os.path.join(self.ia_resourcepack_root, "equipment", f"{path}.json"),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _equipment_layer_texture_path(self, layer_type, texture_path):
+        path = texture_path.replace("\\", "/").strip("/")
+        if path.endswith(".png"):
+            path = path[:-4]
+        if path.startswith("textures/"):
+            path = path[len("textures/"):]
+        if path.startswith("entity/equipment/"):
+            return path
+        return f"entity/equipment/{layer_type}/{path}"
+
+    def _convert_equipment_layer_entry(self, layer_type, entry):
+        if isinstance(entry, str):
+            raw_texture = entry
+            extra = {}
+        elif isinstance(entry, dict):
+            raw_texture = entry.get("texture")
+            extra = {k: v for k, v in entry.items() if k != "texture"}
+        else:
+            return None
+
+        source_namespace, source_path = self._split_resource_location(raw_texture, default_namespace=self.namespace)
+        if not source_namespace or not source_path:
+            return None
+
+        source_full_path = self._equipment_layer_texture_path(layer_type, source_path)
+        source_ref = f"{source_namespace}:{source_full_path}"
+        target_ref = f"{self.namespace}:{source_full_path}"
+        ref_pair = {"source": source_ref, "target": target_ref}
+        if ref_pair not in self.equipment_texture_refs:
+            self.equipment_texture_refs.append(ref_pair)
+
+        if extra:
+            converted = {"texture": target_ref}
+            converted.update(extra)
+            return converted
+        return target_ref
+
+    def _ensure_component_equipment_from_asset(self, asset_id):
+        _, source_path = self._split_resource_location(asset_id)
+        if not source_path:
+            return asset_id
+
+        ce_asset_id = f"{self.namespace}:{source_path}"
+        if ce_asset_id in self.ce_config["equipments"]:
+            return ce_asset_id
+
+        asset_file = self._find_equipment_asset_file(asset_id)
+        if not asset_file:
+            return asset_id
+
+        try:
+            with open(asset_file, "r", encoding="utf-8") as f:
+                asset_data = json.load(f)
+        except Exception:
+            return asset_id
+
+        layers = asset_data.get("layers", {})
+        if not isinstance(layers, dict):
+            return asset_id
+
+        equipment = {"type": "component"}
+        for layer_type, layer_entries in layers.items():
+            if not isinstance(layer_entries, list):
+                layer_entries = [layer_entries]
+            converted_entries = []
+            for entry in layer_entries:
+                converted = self._convert_equipment_layer_entry(str(layer_type), entry)
+                if converted is not None:
+                    converted_entries.append(converted)
+            if len(converted_entries) == 1:
+                equipment[str(layer_type)] = converted_entries[0]
+            elif converted_entries:
+                equipment[str(layer_type)] = converted_entries
+
+        if len(equipment) > 1:
+            self.ce_config["equipments"][ce_asset_id] = equipment
+            return ce_asset_id
+        return asset_id
 
     def _build_block_loot_index(self, loots_data):
         index = {}
@@ -896,6 +1043,18 @@ class IAConverter(BaseConverter):
         
         if "model_id" in resource:
             ce_item["custom_model_data"] = resource["model_id"]
+
+        equippable = self._extract_equippable_component(data)
+        if equippable:
+            equipment_settings = {}
+            asset_id = equippable.get("asset_id")
+            if asset_id:
+                equipment_settings["asset_id"] = self._ensure_component_equipment_from_asset(asset_id)
+            slot = self._normalize_slot_name(equippable.get("slot"))
+            if slot:
+                equipment_settings["slot"] = slot
+            if equipment_settings:
+                ce_item.setdefault("settings", {})["equipment"] = equipment_settings
 
         # 根据材质或行为处理特定类型
         behaviours = data.get("behaviours", {})
@@ -1921,7 +2080,8 @@ class IAConverter(BaseConverter):
 
     def _normalize_textures_for_item(self, textures, ce_item):
         ce_textures = []
-        is_armor_item = self._is_armor(ce_item.get("material", ""))
+        material = str(ce_item.get("material", "")).upper()
+        is_armor_item = self._is_armor(material) or material == "ELYTRA"
         for tex in textures:
             tex_str = str(tex)
             if tex_str.lower().endswith(".png"):
@@ -1950,6 +2110,9 @@ class IAConverter(BaseConverter):
                 final_path = tex_str
                 
             ce_textures.append(f"{self.namespace}:{final_path}")
+        if material == "ELYTRA" and len(ce_textures) == 1:
+            # CraftEngine's elytra item model template expects normal and broken textures.
+            ce_textures.append(ce_textures[0])
         return ce_textures
 
     def _handle_generic_model(self, ce_item, resource):
